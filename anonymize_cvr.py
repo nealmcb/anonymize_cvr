@@ -132,6 +132,18 @@ def anonymize_cvr(
         'final_styles': 0
     }
     
+    # Detect line terminator from input file
+    with open(input_file, 'rb') as f:
+        first_chunk = f.read(1024)
+        if b'\r\n' in first_chunk:
+            lineterminator = '\r\n'
+        elif b'\n' in first_chunk:
+            lineterminator = '\n'
+        elif b'\r' in first_chunk:
+            lineterminator = '\r'
+        else:
+            lineterminator = '\n'  # Default
+    
     # Read input file
     with open(input_file, 'r', encoding='utf-8') as f:
         reader = csv.reader(f)
@@ -208,22 +220,59 @@ def anonymize_cvr(
     stats['aggregated_rows'] = len(aggregated_groups)
     stats['final_styles'] = len(common_styles) + len(aggregated_groups)
     
-    # Write output file
+    # Build a set of rare style rows for quick lookup
+    # Use the full row as identifier since we need exact matches
+    rare_row_set = set()
+    for rows in rare_styles.values():
+        for row in rows:
+            # Store as tuple for set lookup
+            rare_row_set.add(tuple(row))
+    
+    # Collect all output rows (common rows + aggregated rows)
+    output_rows = []
+    
+    # Add common style rows (skip rare rows)
+    for row in all_rows:
+        if tuple(row) not in rare_row_set:
+            output_rows.append(row)
+    
+    # Add aggregated rows
+    output_rows.extend(aggregated_groups)
+    
+    # Sort rows numerically by CvrNumber (column 0)
+    # Handle both numeric CvrNumbers and "AGGREGATED-N" strings
+    def sort_key(row):
+        if not row:
+            return (1, '')  # Empty rows go to end
+        cvr_num = row[0].strip()
+        # Check if it's an aggregated row
+        if cvr_num.startswith('AGGREGATED-'):
+            # Extract number from "AGGREGATED-N" and put at very end
+            try:
+                num = int(cvr_num.split('-')[1])
+                return (2, num)  # 2 means aggregated, sort by number
+            except (ValueError, IndexError):
+                return (3, cvr_num)  # Invalid format goes last
+        # Try to parse as integer
+        try:
+            return (0, int(cvr_num))  # 0 means numeric, sort numerically
+        except ValueError:
+            # Non-numeric, sort as string after numeric values
+            return (1, cvr_num)
+    
+    output_rows.sort(key=sort_key)
+    
+    # Write output file with sorted rows, preserving original line terminator
     with open(output_file, 'w', encoding='utf-8', newline='') as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, lineterminator=lineterminator)
         writer.writerow(version)
         writer.writerow(contests)
         writer.writerow(choices)
         writer.writerow(headers)
         
-        # Write common styles (unchanged)
-        for rows in common_styles.values():
-            for row in rows:
-                writer.writerow(row)
-        
-        # Write aggregated rows
-        for aggregated_row in aggregated_groups:
-            writer.writerow(aggregated_row)
+        # Write sorted rows
+        for row in output_rows:
+            writer.writerow(row)
     
     return stats
 
