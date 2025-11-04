@@ -5,7 +5,7 @@ Automatically anonymize a CVR (Cast Vote Record) file to meet the Colorado requi
 
 ## Legal Background
 - **Colorado Open Records Act (C.R.S. 24-72-205.5)**: Requires counties to cover or redact before "making available for public inspection" a voted ballot if there are fewer than 10 instances of the ballot's style in the election.
-- **Colorado Risk-Limiting Tabulation Audit**: CVRs must be available for public audit purposes while preserving voter anonymity.
+- **Colorado Risk-Limiting Tabulation Audit**: CVRs must be available for public audit purposes while preserving ballot anonymity.
 
 ## Core Requirements
 
@@ -20,7 +20,10 @@ Automatically anonymize a CVR (Cast Vote Record) file to meet the Colorado requi
   - Multiple rare styles together
   - Rare styles with common (non-rare) styles
 - When combining with common styles, prefer popular/common styles that share similar contests
-- Strategy: Use similarity-based grouping to minimize loss of information
+- Strategy: Use similarity-based grouping to preserve statistical properties and maintain auditability
+  - Aggregating similar styles preserves vote pattern structure better than mixing dissimilar styles
+  - This makes aggregated rows more meaningful and useful for audit purposes
+  - We aggregate as few ballots as possible (minimum 10) while still ensuring anonymity
 
 ### 3. Style Similarity
 - Styles are considered similar based on contest overlap (Jaccard similarity)
@@ -30,7 +33,7 @@ Automatically anonymize a CVR (Cast Vote Record) file to meet the Colorado requi
 - When aggregating, prefer combining styles that share more contests
 
 ### 4. Contest Diversity (Best Practice)
-- Ideally, each contest should appear on at least 10 ballots across aggregated rows
+- Ideally, each contest should appear on at least 10 ballots in each aggregated row
 - This helps ensure aggregated rows provide sufficient diversity for anonymity
 - This is a best-effort goal - if a contest only appears on very few rare ballots, this may not be achievable without excluding ballots (which we don't do)
 
@@ -43,7 +46,7 @@ A style signature is created from:
 
 ### Aggregation Algorithm
 1. Identify rare styles (those with < 10 ballots)
-2. If total rare ballots < 10 and cannot be combined with common styles, fail with error
+2. If total ballots < 10 and cannot be combined with common styles, fail with error
 3. For rare styles:
    - Prefer combining similar rare styles together
    - If needed, combine rare styles with similar common styles
@@ -65,12 +68,6 @@ A style signature is created from:
 
 ## Edge Cases and Limitations
 
-### "Zombie" Ballots
-According to the research document (Branscomb et al., 2018), extremely rare ballot styles (1-2 ballots) that result from poor redistricting decisions may need special handling as "zombies":
-- These may not be publicly accessible
-- They may be treated in audits as if voted in a manner that least confirms winning choices
-- Our system will attempt to aggregate these with similar styles, but if aggregation is impossible (< 10 total rare ballots), the task fails
-
 ### Single Contest Issues
 If a single contest has fewer than 10 votes across all ballots, row-level aggregation cannot solve this. This would require a different approach (e.g., contest-level redaction).
 
@@ -90,7 +87,7 @@ These are aspirational goals that inform the design but are not strictly require
 - The rationale: popular styles provide more "cover" and are less likely to reveal individual voting patterns
 
 ### 2. Contest Diversity
-- Ideally, each contest should appear on at least 10 ballots across aggregated rows
+- Ideally, each contest should appear on at least 10 ballots in each aggregated row
 - This ensures that aggregated rows provide sufficient diversity for anonymity
 - However, this may not always be achievable if a contest only appears on very few rare ballots
 - Current implementation: warns when contests appear on fewer than 10 ballots, but doesn't fail
@@ -98,7 +95,7 @@ These are aspirational goals that inform the design but are not strictly require
 ### 3. Information Preservation
 - When possible, aggregate in ways that preserve as much information as possible about vote patterns
 - Combining similar styles (that share contests) helps preserve the structure of the vote data
-- This makes aggregated rows more useful for audit purposes
+- This makes aggregated rows more useful for study
 
 ### 4. Entropy Considerations
 - The "entropy" of each aggregation shouldn't be too low
