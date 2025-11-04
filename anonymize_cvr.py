@@ -210,26 +210,17 @@ def anonymize_cvr(
             common_styles[style_sig] = rows
     
     # Aggregate rare styles into groups of at least min_ballots
-    # Strategy: Group similar rare styles together, ensuring each aggregate has >= min_ballots
+    # Strategy: Group similar rare styles together, and combine with common styles if needed
+    # Prefer combining with popular/common styles that share similar contests
     
     # Count total rare ballots
     total_rare_ballots = sum(len(rows) for rows in rare_styles.values())
-    
-    # CRITICAL: Refuse to create aggregates below threshold
-    if total_rare_ballots > 0 and total_rare_ballots < min_ballots:
-        raise ValueError(
-            f"Cannot anonymize: only {total_rare_ballots} rare ballot(s) found, "
-            f"but {min_ballots} ballots are required per style/aggregate for anonymity. "
-            f"These ballots cannot be safely anonymized through aggregation. "
-            f"They may need to be handled as 'zombies' (not publicly accessible) "
-            f"or require alternative anonymization methods."
-        )
     
     # No rare ballots - nothing to aggregate
     if total_rare_ballots == 0:
         row_groups = []
     else:
-        # Build groups by combining rare styles, preferring similar styles
+        # Build groups by combining rare styles, and with common styles if needed
         # We'll use a greedy algorithm: repeatedly find the best pair of groups to merge
         
         # Start with each rare style as its own group
@@ -237,77 +228,156 @@ def anonymize_cvr(
             {
                 'styles': [style_sig],
                 'rows': rows.copy(),
-                'size': len(rows)
+                'size': len(rows),
+                'is_rare': True  # Track if group contains rare styles (needs aggregation)
             }
             for style_sig, rows in rare_styles.items()
         ]
         
-        # Greedily merge groups until all groups have >= min_ballots
-        # Prefer merging groups that are similar (share contests) and are small
+        # Also create groups for common styles (we may need to borrow ballots from them)
+        # Sort common styles by size (most popular first) for preference
+        common_style_list = sorted(
+            [(style_sig, rows) for style_sig, rows in common_styles.items()],
+            key=lambda x: len(x[1]),
+            reverse=True
+        )
+        
+        # Greedily merge groups until all rare groups have >= min_ballots
+        # We can merge rare groups with each other or with common groups
         while True:
-            # Check if all groups meet the threshold
-            if all(g['size'] >= min_ballots for g in style_groups_list):
-                break
+            # Find rare groups that need more ballots
+            rare_groups = [g for g in style_groups_list if g['is_rare'] and g['size'] < min_ballots]
+            if not rare_groups:
+                break  # All rare groups meet threshold
             
-            # Find the best pair of groups to merge
-            # Priority: merge groups that together reach >= min_ballots
-            # Among those, prefer merging similar styles (higher similarity)
+            # Find the best merge option
             best_merge = None
             best_score = -1
+            merge_with_common = False
+            common_style_to_use = None
             
-            for i in range(len(style_groups_list)):
-                for j in range(i + 1, len(style_groups_list)):
-                    g1, g2 = style_groups_list[i], style_groups_list[j]
-                    combined_size = g1['size'] + g2['size']
+            for rare_group in rare_groups:
+                needed = min_ballots - rare_group['size']
+                
+                # Option 1: Merge with another rare/common group in style_groups_list
+                for j, other_group in enumerate(style_groups_list):
+                    if other_group is rare_group:
+                        continue
                     
-                    # Calculate average similarity between styles in the two groups
+                    combined_size = rare_group['size'] + other_group['size']
+                    
+                    # Calculate average similarity
                     similarities = []
-                    for s1 in g1['styles']:
-                        for s2 in g2['styles']:
+                    for s1 in rare_group['styles']:
+                        for s2 in other_group['styles']:
                             similarities.append(style_similarity(s1, s2))
                     avg_similarity = sum(similarities) / len(similarities) if similarities else 0.0
                     
-                    # Score: prioritize merges that reach threshold or are close to it
-                    # and prefer similar styles
+                    # Score: prioritize reaching threshold with similar styles
                     if combined_size >= min_ballots:
-                        # High priority: reaches threshold, prefer similar
-                        score = 1000 + avg_similarity
+                        # High priority: reaches threshold
+                        # If merging with common style, give bonus for popularity (size)
+                        bonus = other_group['size'] if not other_group['is_rare'] else 0
+                        score = 1000 + avg_similarity * 100 + bonus
                     else:
-                        # Lower priority: doesn't reach threshold yet, but prefer similar
-                        # Also prefer larger combined sizes
+                        # Lower priority: doesn't reach threshold yet
                         score = combined_size + (avg_similarity * 10)
                     
                     if score > best_score:
                         best_score = score
-                        best_merge = (i, j)
+                        best_merge = (rare_group, j, None)
+                        merge_with_common = False
+                
+                # Option 2: Borrow ballots from a common style
+                for style_sig, common_rows in common_style_list:
+                    # Only borrow if we can get enough without depleting the common style below threshold
+                    available = min(needed, len(common_rows) - min_ballots)
+                    if available <= 0:
+                        continue  # Can't borrow from this style
+                    
+                    # Calculate similarity
+                    similarities = [
+                        style_similarity(rare_sig, style_sig)
+                        for rare_sig in rare_group['styles']
+                    ]
+                    avg_similarity = sum(similarities) / len(similarities) if similarities else 0.0
+                    
+                    # Score: prefer popular styles (large size) and similar styles
+                    # High priority since we know we can reach threshold
+                    score = 2000 + avg_similarity * 100 + len(common_rows)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_merge = (rare_group, None, (style_sig, available))
+                        merge_with_common = True
+                        common_style_to_use = (style_sig, common_rows)
             
             if best_merge is None:
-                # Shouldn't happen if we have >= min_ballots total
-                break
+                # Cannot create aggregates meeting threshold
+                raise ValueError(
+                    f"Cannot anonymize: {total_rare_ballots} rare ballot(s) found, "
+                    f"but cannot create aggregate(s) with at least {min_ballots} ballots each. "
+                    f"These ballots cannot be safely anonymized through aggregation. "
+                    f"They may need to be handled as 'zombies' (not publicly accessible) "
+                    f"or require alternative anonymization methods."
+                )
             
-            # Merge the two groups
-            i, j = best_merge
-            g1, g2 = style_groups_list[i], style_groups_list[j]
+            rare_group, other_idx, borrow_info = best_merge
             
-            # Merge g2 into g1
-            g1['styles'].extend(g2['styles'])
-            g1['rows'].extend(g2['rows'])
-            g1['size'] = g1['size'] + g2['size']
-            
-            # Remove g2
-            style_groups_list.pop(j)
+            if merge_with_common and borrow_info:
+                # Borrow ballots from common style
+                style_sig, needed_count = borrow_info
+                common_rows = common_style_to_use[1]
+                
+                # Take ballots from the common style
+                borrowed_rows = common_rows[:needed_count]
+                common_style_rows_remaining = common_rows[needed_count:]
+                
+                # Add to rare group
+                rare_group['styles'].append(style_sig)
+                rare_group['rows'].extend(borrowed_rows)
+                rare_group['size'] += needed_count
+                
+                # Update common style (remove borrowed ballots)
+                # Find and update the common style group if it exists, or update the list
+                common_styles[style_sig] = common_style_rows_remaining
+                # Update the common_style_list for next iteration
+                common_style_list = [
+                    (sig, rows) for sig, rows in common_style_list
+                    if sig != style_sig or len(rows) > min_ballots
+                ]
+                if len(common_style_rows_remaining) >= min_ballots:
+                    # Reinsert in sorted position
+                    common_style_list.append((style_sig, common_style_rows_remaining))
+                    common_style_list.sort(key=lambda x: len(x[1]), reverse=True)
+                
+            else:
+                # Merge two existing groups
+                other_group = style_groups_list[other_idx]
+                
+                # Merge other_group into rare_group
+                rare_group['styles'].extend(other_group['styles'])
+                rare_group['rows'].extend(other_group['rows'])
+                rare_group['size'] += other_group['size']
+                rare_group['is_rare'] = rare_group['is_rare'] or other_group['is_rare']
+                
+                # Remove other_group
+                style_groups_list.pop(other_idx)
         
-        # Verify all groups meet threshold
+        # Verify all rare groups meet threshold
         for g in style_groups_list:
-            if g['size'] < min_ballots:
+            if g['is_rare'] and g['size'] < min_ballots:
                 raise RuntimeError(
                     f"Internal error: created aggregate with only {g['size']} ballots, "
                     f"which is below the {min_ballots}-ballot threshold. "
                     f"This should not happen."
                 )
         
-        # Extract row groups
-        row_groups = [g['rows'] for g in style_groups_list]
+        # Extract row groups (only rare groups need to be aggregated)
+        row_groups = [g['rows'] for g in style_groups_list if g['is_rare']]
+        
+        # Update common_styles to reflect any borrowed ballots
+        # (common_styles dict was updated during the merge process)
         
         # Optional: Verify that each contest appears at least min_ballots times across aggregates
         # This helps ensure that aggregated rows provide enough diversity for anonymity
@@ -358,20 +428,31 @@ def anonymize_cvr(
     stats['aggregated_rows'] = len(aggregated_groups)
     stats['final_styles'] = len(common_styles) + len(aggregated_groups)
     
-    # Build a set of rare style rows for quick lookup
-    # Use the full row as identifier since we need exact matches
+    # Build sets for tracking which rows to exclude (rare rows and borrowed common rows)
     rare_row_set = set()
     for rows in rare_styles.values():
         for row in rows:
-            # Store as tuple for set lookup
             rare_row_set.add(tuple(row))
     
-    # Collect all output rows (common rows + aggregated rows)
+    # Also track rows that were borrowed from common styles for aggregation
+    # We need to find which common style rows were used in aggregates
+    borrowed_row_set = set()
+    if row_groups:
+        # Create a set of all rows that will be in aggregates
+        for group in row_groups:
+            for row in group:
+                row_tuple = tuple(row)
+                # If it's not a rare row, it must be a borrowed common row
+                if row_tuple not in rare_row_set:
+                    borrowed_row_set.add(row_tuple)
+    
+    # Collect all output rows
     output_rows = []
     
-    # Add common style rows (skip rare rows)
+    # Add common style rows (skip rare rows and borrowed rows)
     for row in all_rows:
-        if tuple(row) not in rare_row_set:
+        row_tuple = tuple(row)
+        if row_tuple not in rare_row_set and row_tuple not in borrowed_row_set:
             output_rows.append(row)
     
     # Add aggregated rows
