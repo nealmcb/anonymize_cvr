@@ -101,6 +101,39 @@ def aggregate_votes(rows: List[List[str]], headerlen: int = 8, aggregate_id: str
     return aggregated
 
 
+def style_similarity(sig1: str, sig2: str) -> float:
+    """
+    Calculate similarity between two style signatures based on contest overlap.
+    
+    Returns Jaccard similarity of contest presence (the binary string after first 3 chars).
+    Higher values indicate more similar styles (share more contests).
+    
+    Args:
+        sig1: First style signature
+        sig2: Second style signature
+    
+    Returns:
+        Similarity score between 0.0 and 1.0
+    """
+    # Extract contest patterns (everything after first 3 characters)
+    pattern1 = sig1[3:] if len(sig1) > 3 else ""
+    pattern2 = sig2[3:] if len(sig2) > 3 else ""
+    
+    # Pad to same length
+    max_len = max(len(pattern1), len(pattern2))
+    pattern1 = pattern1.ljust(max_len, '0')
+    pattern2 = pattern2.ljust(max_len, '0')
+    
+    # Count overlapping contests (both have the contest)
+    intersection = sum(1 for a, b in zip(pattern1, pattern2) if a == '1' and b == '1')
+    union = sum(1 for a, b in zip(pattern1, pattern2) if a == '1' or b == '1')
+    
+    if union == 0:
+        return 1.0 if pattern1 == pattern2 else 0.0
+    
+    return intersection / union
+
+
 def anonymize_cvr(
     input_file: str,
     output_file: str,
@@ -177,53 +210,141 @@ def anonymize_cvr(
             common_styles[style_sig] = rows
     
     # Aggregate rare styles into groups of at least min_ballots
-    # Collect all rare style rows first (mixed across different rare styles)
-    all_rare_rows = []
-    for rows in rare_styles.values():
-        all_rare_rows.extend(rows)
+    # Strategy: Group similar rare styles together, ensuring each aggregate has >= min_ballots
     
-    # Check if we have enough rare ballots to create at least one aggregate of min_ballots
-    # The goal is to combine rare styles together to meet the 10-ballot threshold per aggregate
-    if len(all_rare_rows) < min_ballots:
-        # Not enough rare ballots total to meet threshold - all must be combined into one aggregate
-        # This aggregate will be below threshold, which may need special handling
-        # Note: According to the document (Branscomb et al.), such rare cases might need to be 
-        # treated as "zombies" and handled specially in the audit process - they may not be
-        # publicly accessible and treated as if voted in a manner that least confirms winning choices
-        if all_rare_rows:
-            row_groups = [all_rare_rows]
-            # Issue warning that this aggregate doesn't meet the anonymity threshold
-            import warnings
-            warnings.warn(
-                f"Only {len(all_rare_rows)} rare ballot(s) found - cannot meet {min_ballots}-ballot threshold. "
-                f"Aggregated row contains fewer than {min_ballots} ballots and may need special audit handling.",
-                UserWarning
-            )
-        else:
-            row_groups = []
-    else:
-        # We have enough rare ballots - group them to meet the min_ballots threshold
-        # Mix different rare styles together to ensure anonymity
+    # Count total rare ballots
+    total_rare_ballots = sum(len(rows) for rows in rare_styles.values())
+    
+    # CRITICAL: Refuse to create aggregates below threshold
+    if total_rare_ballots > 0 and total_rare_ballots < min_ballots:
+        raise ValueError(
+            f"Cannot anonymize: only {total_rare_ballots} rare ballot(s) found, "
+            f"but {min_ballots} ballots are required per style/aggregate for anonymity. "
+            f"These ballots cannot be safely anonymized through aggregation. "
+            f"They may need to be handled as 'zombies' (not publicly accessible) "
+            f"or require alternative anonymization methods."
+        )
+    
+    # No rare ballots - nothing to aggregate
+    if total_rare_ballots == 0:
         row_groups = []
-        current_group = []
+    else:
+        # Build groups by combining rare styles, preferring similar styles
+        # We'll use a greedy algorithm: repeatedly find the best pair of groups to merge
         
-        for row in all_rare_rows:
-            current_group.append(row)
+        # Start with each rare style as its own group
+        style_groups_list = [
+            {
+                'styles': [style_sig],
+                'rows': rows.copy(),
+                'size': len(rows)
+            }
+            for style_sig, rows in rare_styles.items()
+        ]
+        
+        # Greedily merge groups until all groups have >= min_ballots
+        # Prefer merging groups that are similar (share contests) and are small
+        while True:
+            # Check if all groups meet the threshold
+            if all(g['size'] >= min_ballots for g in style_groups_list):
+                break
             
-            # When we reach min_ballots, finalize this group
-            if len(current_group) >= min_ballots:
-                row_groups.append(current_group)
-                current_group = []
+            # Find the best pair of groups to merge
+            # Priority: merge groups that together reach >= min_ballots
+            # Among those, prefer merging similar styles (higher similarity)
+            best_merge = None
+            best_score = -1
+            
+            for i in range(len(style_groups_list)):
+                for j in range(i + 1, len(style_groups_list)):
+                    g1, g2 = style_groups_list[i], style_groups_list[j]
+                    combined_size = g1['size'] + g2['size']
+                    
+                    # Calculate average similarity between styles in the two groups
+                    similarities = []
+                    for s1 in g1['styles']:
+                        for s2 in g2['styles']:
+                            similarities.append(style_similarity(s1, s2))
+                    avg_similarity = sum(similarities) / len(similarities) if similarities else 0.0
+                    
+                    # Score: prioritize merges that reach threshold or are close to it
+                    # and prefer similar styles
+                    if combined_size >= min_ballots:
+                        # High priority: reaches threshold, prefer similar
+                        score = 1000 + avg_similarity
+                    else:
+                        # Lower priority: doesn't reach threshold yet, but prefer similar
+                        # Also prefer larger combined sizes
+                        score = combined_size + (avg_similarity * 10)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_merge = (i, j)
+            
+            if best_merge is None:
+                # Shouldn't happen if we have >= min_ballots total
+                break
+            
+            # Merge the two groups
+            i, j = best_merge
+            g1, g2 = style_groups_list[i], style_groups_list[j]
+            
+            # Merge g2 into g1
+            g1['styles'].extend(g2['styles'])
+            g1['rows'].extend(g2['rows'])
+            g1['size'] = g1['size'] + g2['size']
+            
+            # Remove g2
+            style_groups_list.pop(j)
         
-        # Handle remaining rows: merge with last group if possible
-        if current_group:
-            if row_groups:
-                # Merge remaining rows into the last group to maintain anonymity threshold
-                # This ensures the last group has at least min_ballots
-                row_groups[-1].extend(current_group)
-            else:
-                # Shouldn't happen (we checked len >= min_ballots above), but handle it
-                row_groups.append(current_group)
+        # Verify all groups meet threshold
+        for g in style_groups_list:
+            if g['size'] < min_ballots:
+                raise RuntimeError(
+                    f"Internal error: created aggregate with only {g['size']} ballots, "
+                    f"which is below the {min_ballots}-ballot threshold. "
+                    f"This should not happen."
+                )
+        
+        # Extract row groups
+        row_groups = [g['rows'] for g in style_groups_list]
+        
+        # Optional: Verify that each contest appears at least min_ballots times across aggregates
+        # This helps ensure that aggregated rows provide enough diversity for anonymity
+        # Note: This is a best-effort check - if a contest only appears on a few rare ballots,
+        # we can't enforce this without excluding ballots, which we don't do
+        if row_groups and headerlen < len(contests):
+            # Map contest names to the set of column indices that belong to that contest
+            contest_to_columns = defaultdict(set)
+            for col_idx in range(headerlen, len(contests)):
+                contest_name = contests[col_idx].strip()
+                if contest_name:
+                    contest_to_columns[contest_name].add(col_idx)
+            
+            # Count how many individual ballots have each contest
+            contest_ballot_counts = defaultdict(int)
+            for group in row_groups:
+                for row in group:
+                    for contest_name, col_indices in contest_to_columns.items():
+                        # Check if any column for this contest is non-empty (contest appears on this ballot)
+                        if any(col_idx < len(row) and row[col_idx].strip() for col_idx in col_indices):
+                            contest_ballot_counts[contest_name] += 1
+            
+            # Warn if any contest appears on fewer than min_ballots ballots across aggregates
+            low_contest_counts = {
+                contest_name: count
+                for contest_name, count in contest_ballot_counts.items()
+                if count < min_ballots
+            }
+            if low_contest_counts:
+                import warnings
+                for contest_name, count in low_contest_counts.items():
+                    warnings.warn(
+                        f"Contest '{contest_name[:60]}' appears on only {count} ballot(s) in aggregated rows, "
+                        f"which is below the {min_ballots}-ballot threshold. "
+                        f"This may reduce anonymity protection for this contest.",
+                        UserWarning
+                    )
     
     # Create aggregated rows from the row groups
     aggregated_groups = []
