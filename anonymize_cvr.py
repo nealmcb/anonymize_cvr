@@ -177,36 +177,53 @@ def anonymize_cvr(
             common_styles[style_sig] = rows
     
     # Aggregate rare styles into groups of at least min_ballots
-    # Collect all rare style rows first, preserving their original order
+    # Collect all rare style rows first (mixed across different rare styles)
     all_rare_rows = []
     for rows in rare_styles.values():
         all_rare_rows.extend(rows)
     
-    # Track groups of rows that will be aggregated together
-    # This allows us to merge the last group with remaining rows if needed
-    row_groups = []
-    current_group = []
-    
-    for row in all_rare_rows:
-        current_group.append(row)
-        
-        # When we reach min_ballots, finalize this group
-        if len(current_group) >= min_ballots:
-            row_groups.append(current_group)
-            current_group = []
-    
-    # Handle remaining rows: merge with last group if possible
-    if current_group:
-        if row_groups and len(current_group) < min_ballots:
-            # Merge remaining rows into the last group to ensure anonymity
-            row_groups[-1].extend(current_group)
-        elif len(current_group) >= min_ballots:
-            # Enough rows for a standalone group
-            row_groups.append(current_group)
+    # Check if we have enough rare ballots to create at least one aggregate of min_ballots
+    # The goal is to combine rare styles together to meet the 10-ballot threshold per aggregate
+    if len(all_rare_rows) < min_ballots:
+        # Not enough rare ballots total to meet threshold - all must be combined into one aggregate
+        # This aggregate will be below threshold, which may need special handling
+        # Note: According to the document (Branscomb et al.), such rare cases might need to be 
+        # treated as "zombies" and handled specially in the audit process - they may not be
+        # publicly accessible and treated as if voted in a manner that least confirms winning choices
+        if all_rare_rows:
+            row_groups = [all_rare_rows]
+            # Issue warning that this aggregate doesn't meet the anonymity threshold
+            import warnings
+            warnings.warn(
+                f"Only {len(all_rare_rows)} rare ballot(s) found - cannot meet {min_ballots}-ballot threshold. "
+                f"Aggregated row contains fewer than {min_ballots} ballots and may need special audit handling.",
+                UserWarning
+            )
         else:
-            # Few remaining rows - create a group anyway (may be below threshold)
-            # This preserves all data but may need special handling in audit
-            row_groups.append(current_group)
+            row_groups = []
+    else:
+        # We have enough rare ballots - group them to meet the min_ballots threshold
+        # Mix different rare styles together to ensure anonymity
+        row_groups = []
+        current_group = []
+        
+        for row in all_rare_rows:
+            current_group.append(row)
+            
+            # When we reach min_ballots, finalize this group
+            if len(current_group) >= min_ballots:
+                row_groups.append(current_group)
+                current_group = []
+        
+        # Handle remaining rows: merge with last group if possible
+        if current_group:
+            if row_groups:
+                # Merge remaining rows into the last group to maintain anonymity threshold
+                # This ensures the last group has at least min_ballots
+                row_groups[-1].extend(current_group)
+            else:
+                # Shouldn't happen (we checked len >= min_ballots above), but handle it
+                row_groups.append(current_group)
     
     # Create aggregated rows from the row groups
     aggregated_groups = []
