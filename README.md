@@ -8,6 +8,10 @@ This tool addresses the requirement from **Colorado Open Records Act (C.R.S. 24-
 
 The anonymization process aggregates rare styles (those with fewer than 10 ballots) together to meet the minimum threshold while preserving ballot anonymity for Risk-Limiting Tabulation Audits.
 
+## Status
+
+This is alpha-quality software. Use at your own risk.
+
 ### Legal and Research Foundation
 
 - **Colorado Open Records Act (C.R.S. 24-72-205.5)**: Requires anonymization of ballots with fewer than 10 instances per style
@@ -103,7 +107,3 @@ The anonymization tool automatically:
 
 - Python 3.12+
 - Standard library only (csv, collections, typing)
-
-## Status
-
-This is alpha-quality software. Use at your own risk.
