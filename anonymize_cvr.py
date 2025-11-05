@@ -134,12 +134,241 @@ def style_similarity(sig1: str, sig2: str) -> float:
     return intersection / union
 
 
+def compute_contest_pattern(row: List[str], contests: List[str], headerlen: int = 8) -> str:
+    """
+    Compute contest pattern from a ballot row based solely on which contests have votes.
+    
+    Returns a binary string indicating which contests appear on the ballot (1) or not (0).
+    A contest appears if any of its choice columns is non-empty.
+    
+    Args:
+        row: List of strings representing a CVR row
+        contests: Contest names row from CVR header
+        headerlen: Number of header columns before vote data starts
+    
+    Returns:
+        Binary string pattern (e.g., "110" means contests 1 and 2 appear, 3 doesn't)
+    """
+    # Group columns by contest
+    contest_to_columns: Dict[str, List[int]] = defaultdict(list)
+    for col_idx in range(headerlen, len(contests)):
+        contest_name = contests[col_idx].strip()
+        if contest_name:
+            contest_to_columns[contest_name].append(col_idx)
+    
+    # Check if each contest appears (any column for that contest is non-empty)
+    contest_pattern = []
+    for contest_name in sorted(contest_to_columns.keys()):
+        col_indices = contest_to_columns[contest_name]
+        contest_appears = any(
+            col_idx < len(row) and row[col_idx].strip() != ''
+            for col_idx in col_indices
+        )
+        contest_pattern.append('1' if contest_appears else '0')
+    
+    return ''.join(contest_pattern)
+
+def compute_descriptive_style_name(contest_pattern: str, ballot_count: int, style_number: int, min_ballots: int = 10) -> str:
+    """
+    Compute a descriptive style name based on contest pattern.
+    
+    Format: <n><R|S><m>
+    - n: number of contests on the ballot
+    - R: Rare (less than min_ballots) or S: Common (min_ballots or more)
+    - m: unique style number
+    
+    Args:
+        contest_pattern: Binary string indicating which contests appear
+        ballot_count: Number of ballots with this pattern
+        style_number: Unique sequential number for this style
+        min_ballots: Minimum ballots to be considered common
+    
+    Returns:
+        Descriptive style name (e.g., "1R1", "2S2", "1S3")
+    """
+    contest_count = contest_pattern.count('1')
+    rarity = 'R' if ballot_count < min_ballots else 'S'
+    return f"{contest_count}{rarity}{style_number}"
+
+def analyze_styles(
+    all_rows: List[List[str]],
+    contests: List[str],
+    choices: List[str],
+    headerlen: int = 8,
+    stylecol: int = 6,
+    min_ballots: int = 10,
+    summarize: bool = False
+) -> Dict[str, any]:
+    """
+    Analyze styles in the CVR file.
+    
+    Computes descriptive style names based on contest patterns and checks for leakage.
+    
+    Args:
+        all_rows: All data rows from CVR
+        contests: Contest names row
+        choices: Choice names row
+        headerlen: Number of header columns
+        stylecol: Index of style column
+        min_ballots: Minimum ballots per style
+        summarize: Whether to include detailed summaries
+    
+    Returns:
+        Dictionary with analysis results including leakage warnings
+    """
+    # Group ballots by contest pattern (which contests appear)
+    pattern_to_rows: Dict[str, List[List[str]]] = defaultdict(list)
+    cvr_style_to_rows: Dict[str, List[List[str]]] = defaultdict(list)
+    
+    for row in all_rows:
+        if len(row) <= headerlen:
+            continue
+        
+        # Compute contest pattern
+        contest_pattern = compute_contest_pattern(row, contests, headerlen)
+        pattern_to_rows[contest_pattern].append(row)
+        
+        # Track CVR style name
+        if len(row) > stylecol:
+            cvr_style = row[stylecol].strip()
+            cvr_style_to_rows[cvr_style].append(row)
+    
+    # Generate descriptive style names for each contest pattern
+    pattern_to_descriptive: Dict[str, str] = {}
+    style_counter = 1
+    for pattern in sorted(pattern_to_rows.keys()):
+        ballot_count = len(pattern_to_rows[pattern])
+        descriptive_name = compute_descriptive_style_name(pattern, ballot_count, style_counter, min_ballots)
+        pattern_to_descriptive[pattern] = descriptive_name
+        style_counter += 1
+    
+    # Check for leakage: different CVR style names for same contest pattern
+    leakage_warnings = []
+    pattern_to_cvr_styles: Dict[str, set] = defaultdict(set)
+    
+    for row in all_rows:
+        if len(row) <= headerlen or len(row) <= stylecol:
+            continue
+        
+        contest_pattern = compute_contest_pattern(row, contests, headerlen)
+        cvr_style = row[stylecol].strip()
+        pattern_to_cvr_styles[contest_pattern].add(cvr_style)
+    
+    for pattern, cvr_styles in pattern_to_cvr_styles.items():
+        if len(cvr_styles) > 1:
+            descriptive_name = pattern_to_descriptive[pattern]
+            leakage_warnings.append(
+                f"Leakage detected: Contest pattern '{pattern}' (descriptive style '{descriptive_name}') "
+                f"has {len(cvr_styles)} different CVR style names: {sorted(cvr_styles)}. "
+                f"This may reveal additional information about voters."
+            )
+    
+    # Build mapping from CVR style to descriptive style
+    cvr_to_descriptive: Dict[str, str] = {}
+    for cvr_style, rows in cvr_style_to_rows.items():
+        if rows:
+            pattern = compute_contest_pattern(rows[0], contests, headerlen)
+            cvr_to_descriptive[cvr_style] = pattern_to_descriptive[pattern]
+    
+    result = {
+        'pattern_to_descriptive': pattern_to_descriptive,
+        'cvr_to_descriptive': cvr_to_descriptive,
+        'leakage_warnings': leakage_warnings,
+        'pattern_to_rows': pattern_to_rows
+    }
+    
+    # Optional summary
+    if summarize:
+        summary = generate_summary(all_rows, contests, choices, pattern_to_rows, 
+                                  pattern_to_descriptive, headerlen)
+        result['summary'] = summary
+    
+    return result
+
+def generate_summary(
+    all_rows: List[List[str]],
+    contests: List[str],
+    choices: List[str],
+    pattern_to_rows: Dict[str, List[List[str]]],
+    pattern_to_descriptive: Dict[str, str],
+    headerlen: int
+) -> Dict[str, any]:
+    """Generate summary statistics for the CVR."""
+    # Map contest names to column indices
+    contest_to_columns: Dict[str, List[int]] = defaultdict(list)
+    for col_idx in range(headerlen, len(contests)):
+        contest_name = contests[col_idx].strip()
+        if contest_name:
+            contest_to_columns[contest_name].append(col_idx)
+    
+    # Calculate totals by contest for each choice
+    contest_totals: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for row in all_rows:
+        for contest_name, col_indices in contest_to_columns.items():
+            for col_idx in col_indices:
+                if col_idx < len(row):
+                    val = row[col_idx].strip()
+                    if val and (val == '1' or val == '0'):
+                        choice_name = choices[col_idx].strip() if col_idx < len(choices) else f"Choice{col_idx}"
+                        if val == '1':
+                            contest_totals[contest_name][choice_name] += 1
+    
+    # Calculate ballot counts and probabilities for each style
+    style_stats: Dict[str, Dict[str, any]] = {}
+    for pattern, rows in pattern_to_rows.items():
+        descriptive_name = pattern_to_descriptive[pattern]
+        
+        # Count votes for each choice in this style
+        choice_votes: Dict[str, int] = defaultdict(int)
+        eligible_voters: Dict[str, int] = defaultdict(int)
+        
+        for row in rows:
+            for contest_name, col_indices in contest_to_columns.items():
+                # Check if any column for this contest is non-empty (contest appears)
+                contest_appears = any(
+                    col_idx < len(row) and row[col_idx].strip() != ''
+                    for col_idx in col_indices
+                )
+                
+                if contest_appears:
+                    eligible_voters[contest_name] += 1
+                    for col_idx in col_indices:
+                        if col_idx < len(row):
+                            val = row[col_idx].strip()
+                            choice_name = choices[col_idx].strip() if col_idx < len(choices) else f"Choice{col_idx}"
+                            if val == '1':
+                                choice_votes[choice_name] += 1
+        
+        # Calculate probabilities
+        probabilities: Dict[str, Dict[str, float]] = {}
+        for contest_name in contest_to_columns.keys():
+            if contest_name in eligible_voters and eligible_voters[contest_name] > 0:
+                prob_dict = {}
+                for col_idx in contest_to_columns[contest_name]:
+                    choice_name = choices[col_idx].strip() if col_idx < len(choices) else f"Choice{col_idx}"
+                    votes = choice_votes.get(choice_name, 0)
+                    prob = votes / eligible_voters[contest_name]
+                    prob_dict[choice_name] = prob
+                probabilities[contest_name] = prob_dict
+        
+        style_stats[descriptive_name] = {
+            'ballot_count': len(rows),
+            'contest_pattern': pattern,
+            'probabilities': probabilities
+        }
+    
+    return {
+        'contest_totals': dict(contest_totals),
+        'style_stats': style_stats
+    }
+
 def anonymize_cvr(
     input_file: str,
     output_file: str,
     min_ballots: int = 10,
     stylecol: int = 6,
-    headerlen: int = 8
+    headerlen: int = 8,
+    summarize: bool = False
 ) -> Dict[str, int]:
     """
     Anonymize a CVR file by aggregating rare styles.
@@ -188,6 +417,41 @@ def anonymize_cvr(
         # Read all data rows
         all_rows = list(reader)
         stats['total_rows'] = len(all_rows)
+    
+    # Analyze styles for leakage detection
+    style_analysis = analyze_styles(all_rows, contests, choices, headerlen, stylecol, min_ballots, summarize)
+    
+    # Report leakage warnings
+    if style_analysis['leakage_warnings']:
+        print("Warning: Potential information leakage detected:", file=sys.stderr)
+        for warning in style_analysis['leakage_warnings']:
+            print(f"  {warning}", file=sys.stderr)
+    
+    # Print style mapping
+    if style_analysis['cvr_to_descriptive']:
+        print("\nStyle mapping (CVR style -> Descriptive style):")
+        for cvr_style in sorted(style_analysis['cvr_to_descriptive'].keys()):
+            descriptive = style_analysis['cvr_to_descriptive'][cvr_style]
+            print(f"  {cvr_style} -> {descriptive}")
+    
+    # Print summary if requested
+    if summarize and 'summary' in style_analysis:
+        summary = style_analysis['summary']
+        print("\n=== CVR Summary ===")
+        
+        print("\nTotals by contest:")
+        for contest_name, choice_totals in summary['contest_totals'].items():
+            print(f"  {contest_name}:")
+            for choice_name, count in sorted(choice_totals.items()):
+                print(f"    {choice_name}: {count}")
+        
+        print("\nStyle statistics:")
+        for style_name, style_info in sorted(summary['style_stats'].items()):
+            print(f"  {style_name} ({style_info['ballot_count']} ballots, pattern: {style_info['contest_pattern']}):")
+            for contest_name, probs in style_info['probabilities'].items():
+                print(f"    {contest_name}:")
+                for choice_name, prob in sorted(probs.items()):
+                    print(f"      {choice_name}: {prob:.4f}")
     
     # Group rows by style signature
     style_groups: Dict[str, List[List[str]]] = defaultdict(list)
@@ -526,6 +790,8 @@ Examples:
                        help='Index of style column (default: 6)')
     parser.add_argument('--headerlen', type=int, default=8,
                        help='Number of header columns (default: 8)')
+    parser.add_argument('--summarize', '-s', action='store_true',
+                       help='Print detailed summary of CVR statistics')
     
     args = parser.parse_args()
     
@@ -535,7 +801,8 @@ Examples:
             args.output_file,
             args.min_ballots,
             args.stylecol,
-            args.headerlen
+            args.headerlen,
+            args.summarize
         )
         
         print(f"Anonymization complete!")

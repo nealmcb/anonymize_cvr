@@ -39,6 +39,17 @@ Automatically anonymize a CVR (Cast Vote Record) file to meet the Colorado requi
 
 ## Implementation Details
 
+### Style checking
+After reading the file in
+- Compute a new unique descriptive style name for each style based solely on which contests have votes.
+  Use the naming scheme from the guess_styles game.
+- Check that the computed styles each map uniquely to a style name from the cvr.
+- If information has been leaked by applying different style names to different ballots which each have the same set of contests, that should be pointed out.
+
+Optionally summarize the cvr:
+ * totals by contest for each choice
+ * ballot counts for each style encountered, and vote probabilities for each choice across the style.
+
 ### Style Signature
 A style signature is created from:
 - First 3 characters of the PrecinctPortion field
