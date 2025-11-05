@@ -290,8 +290,17 @@ def anonymize_cvr(
                 
                 # Option 2: Borrow ballots from a common style
                 for style_sig, common_rows in common_style_list:
-                    # Only borrow if we can get enough without depleting the common style below threshold
-                    available = min(needed, len(common_rows) - min_ballots)
+                    # Calculate how many we can borrow
+                    # If borrowing would leave fewer than min_ballots, take all of them
+                    # This avoids leaving behind what looks like a rare style
+                    remaining_after_borrow = len(common_rows) - needed
+                    if remaining_after_borrow < min_ballots and remaining_after_borrow > 0:
+                        # Take all ballots to avoid leaving a rare-looking style
+                        available = len(common_rows)
+                    else:
+                        # Borrow only what we need
+                        available = min(needed, len(common_rows))
+                    
                     if available <= 0:
                         continue  # Can't borrow from this style
                     
