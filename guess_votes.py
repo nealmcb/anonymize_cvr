@@ -154,7 +154,11 @@ def read_cvr_file(cvr_file, headerlen=8, stylecol=6):
                 elif v == "0" or v == "1":
                     votes.append(int(v))
                 else:
-                    votes.append(v)
+                    # Try to parse as integer (aggregated rows have vote counts)
+                    try:
+                        votes.append(int(v))
+                    except ValueError:
+                        votes.append(v)
             
             ballots_by_style[style].append({
                 "style": style,
@@ -163,57 +167,135 @@ def read_cvr_file(cvr_file, headerlen=8, stylecol=6):
     
     return ballots_by_style
 
+def read_ballots_from_cvr(cvr_file, headerlen=8, stylecol=6):
+    """Read ballots from CVR file and return in format needed for probability calculation."""
+    ballots = []
+    ballots_by_style = read_cvr_file(cvr_file, headerlen, stylecol)
+    
+    for style, style_ballots in ballots_by_style.items():
+        for ballot in style_ballots:
+            ballots.append({
+                "precinct": style,
+                "votes": ballot["votes"]
+            })
+    
+    return ballots
+
 def calculate_style_probabilities(ballots_by_style, min_ballots=10):
-    """Calculate probabilities for each style based on CVR data."""
+    """Calculate probabilities for each style based on CVR data.
+    
+    For aggregated rows, the votes are counts (sums), not individual ballot votes.
+    We need to handle them differently - use the vote counts directly to calculate probabilities.
+    """
     style_probs = {}
     
     for style, style_ballots in ballots_by_style.items():
-        # Count votes for this style
-        votes_a0 = 0
-        votes_a1 = 0
-        votes_b0 = 0
-        votes_b1 = 0
-        eligible_a = 0
-        eligible_b = 0
-        
-        for ballot in style_ballots:
-            votes = ballot["votes"]
-            if len(votes) >= 2:
-                if votes[0] != "" or votes[1] != "":  # Contest A on ballot
-                    eligible_a += 1
-                    if votes[0] == 1:
-                        votes_a0 += 1
-                    elif votes[1] == 1:
-                        votes_a1 += 1
-                
-                if len(votes) >= 4:
-                    if votes[2] != "" or votes[3] != "":  # Contest B on ballot
-                        eligible_b += 1
-                        if votes[2] == 1:
-                            votes_b0 += 1
-                        elif votes[3] == 1:
-                            votes_b1 += 1
-        
-        # Calculate probabilities for this style
-        prob_a0 = votes_a0 / eligible_a if eligible_a > 0 else 0.0
-        prob_a1 = votes_a1 / eligible_a if eligible_a > 0 else 0.0
-        
-        prob_b0 = votes_b0 / eligible_b if eligible_b > 0 else 0.0
-        prob_b1 = votes_b1 / eligible_b if eligible_b > 0 else 0.0
-        
-        is_common = len(style_ballots) >= min_ballots
         is_aggregated = style.startswith("AGGREGATED-")
+        
+        if is_aggregated:
+            # For aggregated rows, we have vote counts (sums), not individual votes
+            # Each style_ballot represents one aggregated row (with vote counts)
+            if len(style_ballots) == 0:
+                continue
+            
+            # Get the aggregated row (should be only one)
+            aggregated_ballot = style_ballots[0]
+            votes = aggregated_ballot["votes"]
+            
+            # The votes are counts (sums), so we use them directly
+            # Handle both string and numeric formats
+            total_a0 = 0
+            total_a1 = 0
+            total_b0 = 0
+            total_b1 = 0
+            
+            if len(votes) > 0:
+                val = votes[0]
+                if isinstance(val, (int, float)):
+                    total_a0 = int(val)
+                elif isinstance(val, str) and val.strip() and val.strip().isdigit():
+                    total_a0 = int(val.strip())
+            
+            if len(votes) > 1:
+                val = votes[1]
+                if isinstance(val, (int, float)):
+                    total_a1 = int(val)
+                elif isinstance(val, str) and val.strip() and val.strip().isdigit():
+                    total_a1 = int(val.strip())
+            
+            if len(votes) > 2:
+                val = votes[2]
+                if isinstance(val, (int, float)):
+                    total_b0 = int(val)
+                elif isinstance(val, str) and val.strip() and val.strip().isdigit():
+                    total_b0 = int(val.strip())
+            
+            if len(votes) > 3:
+                val = votes[3]
+                if isinstance(val, (int, float)):
+                    total_b1 = int(val)
+                elif isinstance(val, str) and val.strip() and val.strip().isdigit():
+                    total_b1 = int(val.strip())
+            
+            # Total votes for each contest
+            total_a = total_a0 + total_a1
+            total_b = total_b0 + total_b1
+            
+            # Calculate probabilities from vote counts
+            prob_a0 = total_a0 / total_a if total_a > 0 else 0.0
+            prob_a1 = total_a1 / total_a if total_a > 0 else 0.0
+            prob_b0 = total_b0 / total_b if total_b > 0 else 0.0
+            prob_b1 = total_b1 / total_b if total_b > 0 else 0.0
+            
+            # Estimate ballot count from the aggregate (use max of contest totals as proxy)
+            estimated_ballots = max(total_a, total_b) if (total_a > 0 or total_b > 0) else 1
+            
+        else:
+            # Regular ballots - count individual votes
+            votes_a0 = 0
+            votes_a1 = 0
+            votes_b0 = 0
+            votes_b1 = 0
+            eligible_a = 0
+            eligible_b = 0
+            
+            for ballot in style_ballots:
+                votes = ballot["votes"]
+                if len(votes) >= 2:
+                    if votes[0] != "" or votes[1] != "":  # Contest A on ballot
+                        eligible_a += 1
+                        if votes[0] == 1:
+                            votes_a0 += 1
+                        elif votes[1] == 1:
+                            votes_a1 += 1
+                    
+                    if len(votes) >= 4:
+                        if votes[2] != "" or votes[3] != "":  # Contest B on ballot
+                            eligible_b += 1
+                            if votes[2] == 1:
+                                votes_b0 += 1
+                            elif votes[3] == 1:
+                                votes_b1 += 1
+            
+            # Calculate probabilities for this style
+            prob_a0 = votes_a0 / eligible_a if eligible_a > 0 else 0.0
+            prob_a1 = votes_a1 / eligible_a if eligible_a > 0 else 0.0
+            
+            prob_b0 = votes_b0 / eligible_b if eligible_b > 0 else 0.0
+            prob_b1 = votes_b1 / eligible_b if eligible_b > 0 else 0.0
+            
+            estimated_ballots = len(style_ballots)
+        
+        is_common = estimated_ballots >= min_ballots
         
         style_probs[style] = {
             "prob_a0": prob_a0,
             "prob_a1": prob_a1,
             "prob_b0": prob_b0,
             "prob_b1": prob_b1,
-            "eligible_a": eligible_a,
-            "eligible_b": eligible_b,
             "is_common": is_common,
             "is_aggregated": is_aggregated,
-            "ballot_count": len(style_ballots)
+            "ballot_count": estimated_ballots
         }
     
     return style_probs
@@ -277,14 +359,15 @@ def format_prob(p):
     s = f"{p:.4f}"
     return s[:6] if len(s) >= 6 else s.ljust(6, "0")
 
-def write_probability_spreadsheet(ballots, output_file, overall_probs, style_probs=None):
+def write_probability_spreadsheet(ballots, output_file, overall_probs, style_probs=None, style_mapping=None):
     """Write probability spreadsheet to file.
     
     Args:
-        ballots: List of ballot dictionaries
+        ballots: List of ballot dictionaries from original CVR
         output_file: Path to output CSV file
         overall_probs: Dictionary of overall probabilities
         style_probs: Optional dictionary of style-specific probabilities (from CVR)
+        style_mapping: Optional mapping from original styles to anonymized styles
     """
     with open(output_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, lineterminator='\n')
@@ -295,7 +378,14 @@ def write_probability_spreadsheet(ballots, output_file, overall_probs, style_pro
         # One row per voter
         for i, ballot in enumerate(ballots, 1):
             voter_name = f"V{i}"
-            style = ballot["precinct"]
+            original_style = ballot["precinct"]
+            
+            # If we have a style mapping (for anonymized CVR), use it to find the anonymized style
+            if style_mapping and original_style in style_mapping:
+                style = style_mapping[original_style]
+            else:
+                style = original_style
+            
             votes = ballot["votes"]
             
             # Determine probabilities based on CVR data if available
@@ -333,12 +423,13 @@ def write_probability_spreadsheet(ballots, output_file, overall_probs, style_pro
             
             writer.writerow([voter_name, style, p_a0, p_a1, p_b0, p_b1])
 
-def create_probability_spreadsheets(ballots, cvr_file=None, min_ballots=10):
-    """Create both probability spreadsheets: one with overall results, one refined by CVR.
+def create_probability_spreadsheets(ballots, original_cvr_file=None, anonymized_cvr_file=None, min_ballots=10):
+    """Create probability spreadsheets: one with overall results, one refined by original CVR, one by anonymized CVR.
     
     Generates:
     - test_case_results_probabilities.csv: Using overall election results only
-    - test_case_refined_probabilities.csv: Using CVR file to refine probabilities
+    - test_case_original_probabilities.csv: Using original CVR file to refine probabilities
+    - test_case_anonymized_probabilities.csv: Using anonymized CVR file to refine probabilities
     """
     
     # Calculate overall election probabilities
@@ -352,40 +443,89 @@ def create_probability_spreadsheets(ballots, cvr_file=None, min_ballots=10):
     write_probability_spreadsheet(ballots, "test_case_results_probabilities.csv", overall_probs, style_probs=None)
     print(f"\nCreated test_case_results_probabilities.csv (using overall election results)")
     
-    # If CVR file is provided, read it and calculate style-level probabilities
-    style_probs = {}
-    if cvr_file and os.path.exists(cvr_file):
-        ballots_by_style = read_cvr_file(cvr_file)
+    # If original CVR file is provided, read it and calculate style-level probabilities
+    if original_cvr_file and os.path.exists(original_cvr_file):
+        ballots_by_style = read_cvr_file(original_cvr_file)
         style_probs = calculate_style_probabilities(ballots_by_style, min_ballots)
-        print(f"\nUsing CVR file to refine probabilities:")
+        print(f"\nUsing original CVR file to refine probabilities:")
         print(f"  Found {len(style_probs)} styles")
         for style, probs in style_probs.items():
             status = "common" if probs["is_common"] else ("aggregated" if probs["is_aggregated"] else "rare")
             print(f"    {style}: {probs['ballot_count']} ballots ({status})")
         
-        # Write refined probabilities spreadsheet (with CVR refinement)
-        write_probability_spreadsheet(ballots, "test_case_refined_probabilities.csv", overall_probs, style_probs=style_probs)
-        print(f"Created test_case_refined_probabilities.csv (using CVR-refined probabilities)")
+        # Write original probabilities spreadsheet
+        write_probability_spreadsheet(ballots, "test_case_original_probabilities.csv", overall_probs, style_probs=style_probs)
+        print(f"Created test_case_original_probabilities.csv (using original CVR-refined probabilities)")
     else:
-        print(f"\nNo CVR file provided - creating test_case_refined_probabilities.csv with overall results")
-        # Still create the refined file, but it will have the same data as results
-        write_probability_spreadsheet(ballots, "test_case_refined_probabilities.csv", overall_probs, style_probs=None)
+        print(f"\nNo original CVR file provided - creating test_case_original_probabilities.csv with overall results")
+        write_probability_spreadsheet(ballots, "test_case_original_probabilities.csv", overall_probs, style_probs=None)
+    
+    # If anonymized CVR file is provided, read it and calculate style-level probabilities
+    if anonymized_cvr_file and os.path.exists(anonymized_cvr_file):
+        anonymized_ballots_by_style = read_cvr_file(anonymized_cvr_file)
+        anonymized_style_probs = calculate_style_probabilities(anonymized_ballots_by_style, min_ballots)
+        print(f"\nUsing anonymized CVR file to refine probabilities:")
+        print(f"  Found {len(anonymized_style_probs)} styles")
+        for style, probs in anonymized_style_probs.items():
+            status = "common" if probs["is_common"] else ("aggregated" if probs["is_aggregated"] else "rare")
+            print(f"    {style}: {probs['ballot_count']} ballots ({status})")
+        
+        # Build mapping from original styles to anonymized styles
+        # For styles that were aggregated, we need to map them to the aggregated style
+        # Read original CVR to see which styles exist
+        original_ballots_by_style = read_cvr_file(original_cvr_file) if original_cvr_file and os.path.exists(original_cvr_file) else {}
+        style_mapping = {}
+        
+        # Find which original styles were aggregated
+        # Styles that appear in original but not in anonymized (and are rare) were aggregated
+        for orig_style in original_ballots_by_style.keys():
+            if orig_style not in anonymized_ballots_by_style:
+                # This style was aggregated - find the aggregated style
+                # Look for AGGREGATED-* styles in anonymized
+                for anon_style in anonymized_style_probs.keys():
+                    if anon_style.startswith("AGGREGATED-"):
+                        style_mapping[orig_style] = anon_style
+                        break
+        
+        # Also map styles that still exist (common styles)
+        for orig_style in original_ballots_by_style.keys():
+            if orig_style in anonymized_ballots_by_style:
+                style_mapping[orig_style] = orig_style
+        
+        # Write anonymized probabilities spreadsheet with style mapping
+        write_probability_spreadsheet(ballots, "test_case_anonymized_probabilities.csv", overall_probs, 
+                                     style_probs=anonymized_style_probs, style_mapping=style_mapping)
+        print(f"Created test_case_anonymized_probabilities.csv (using anonymized CVR-refined probabilities)")
+    else:
+        print(f"\nNo anonymized CVR file provided - creating test_case_anonymized_probabilities.csv with overall results")
+        write_probability_spreadsheet(ballots, "test_case_anonymized_probabilities.csv", overall_probs, style_probs=None)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate test case for ballot anonymization testing")
+    parser.add_argument("original_cvr_file", nargs="?", default=None,
+                        help="Path to original CVR file (default: generate test case and use it)")
+    parser.add_argument("--anonymized-cvr", "-a", default=None,
+                        help="Path to anonymized CVR file to compare probabilities")
     parser.add_argument("--election-name", "-n", default="Test Election 2024",
                         help="Name of the election (default: 'Test Election 2024')")
-    parser.add_argument("--cvr-file", "-c", default=None,
-                        help="Path to published CVR file to refine probabilities (default: use overall results)")
     parser.add_argument("--min-ballots", "-m", type=int, default=10,
                         help="Minimum ballots per style to be considered common (default: 10)")
     args = parser.parse_args()
     
-    ballots = create_cvr_file(args.election_name)
-    print(f"Created CVR file with {len(ballots)} ballots")
+    # If original CVR file not provided, generate test case
+    if args.original_cvr_file is None:
+        ballots = create_cvr_file(args.election_name)
+        print(f"Created CVR file with {len(ballots)} ballots")
+        original_cvr_file = "test_case_cvr.csv"
+    else:
+        # Read ballots from existing original CVR file
+        original_cvr_file = args.original_cvr_file
+        ballots = read_ballots_from_cvr(original_cvr_file)
+        print(f"Read original CVR file with {len(ballots)} ballots")
     
-    # Use the generated CVR file if no file specified, otherwise use the specified file
-    cvr_file = args.cvr_file if args.cvr_file else "test_case_cvr.csv"
-    create_probability_spreadsheets(ballots, cvr_file=cvr_file, min_ballots=args.min_ballots)
-    print("\nCreated both probability spreadsheets")
+    create_probability_spreadsheets(ballots, 
+                                   original_cvr_file=original_cvr_file, 
+                                   anonymized_cvr_file=args.anonymized_cvr,
+                                   min_ballots=args.min_ballots)
+    print("\nCreated all probability spreadsheets")
 
