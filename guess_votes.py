@@ -10,6 +10,7 @@ Creates:
 """
 
 import csv
+import argparse
 
 # Test case configuration
 # 1 ballot in style 1R1 (rare, contest A only)
@@ -20,11 +21,11 @@ import csv
 # Contest B: B0, B1
 
 # Create CVR file
-def create_cvr_file():
+def create_cvr_file(election_name):
     """Create the CVR test file."""
     
     # Line 1: Version/Election name
-    version = ["Test Election 2024", "5.10.50.85"]
+    version = [election_name, "V1"]
     version.extend([""] * 6)  # Fill to match headerlen
     
     # Line 2: Contest names (repeated for each choice)
@@ -52,9 +53,9 @@ def create_cvr_file():
         "batch": 1,
         "record": 1,
         "imprinted": "1-1-1",
-        "counting_group": "Vote by Mail",
+        "counting_group": "cg",
         "precinct": "1R1",
-        "ballot_type": "1 (1)",
+        "ballot_type": "",
         "votes": [1, 0, "", ""]  # Voted for A0, not A1, no B contest
     })
     
@@ -73,9 +74,9 @@ def create_cvr_file():
             "batch": 1,
             "record": i + 2,
             "imprinted": f"1-1-{i+2}",
-            "counting_group": "Vote by Mail",
+            "counting_group": "cg",
             "precinct": "2S2",
-            "ballot_type": "2 (2)",
+            "ballot_type": "",
             "votes": [vote_a, vote_a_alt, vote_b, vote_b_alt]
         })
     
@@ -91,15 +92,15 @@ def create_cvr_file():
             "batch": 1,
             "record": i + 12,
             "imprinted": f"1-1-{i+12}",
-            "counting_group": "Vote by Mail",
+            "counting_group": "cg",
             "precinct": "1S3",
-            "ballot_type": "1 (3)",
+            "ballot_type": "",
             "votes": ["", "", vote_b, vote_b_alt]  # No A contest
         })
     
     # Write CVR file
     with open("test_case_cvr.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, lineterminator='\n')
         writer.writerow(version)
         writer.writerow(contests)
         writer.writerow(choices)
@@ -166,7 +167,7 @@ def create_probability_spreadsheet(ballots):
     
     # Create spreadsheet
     with open("test_case_probabilities.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, lineterminator='\n')
         
         # Headers
         writer.writerow(["Voter", "Style", "A0", "A1", "B0", "B1"])
@@ -199,7 +200,12 @@ def create_probability_spreadsheet(ballots):
     print(f"  Contest B: B0={total_votes_b0}/{total_eligible_b} ({prob_b0:.4f}), B1={total_votes_b1}/{total_eligible_b} ({prob_b1:.4f}), Undervote={prob_undervote_b:.4f}")
 
 if __name__ == "__main__":
-    ballots = create_cvr_file()
+    parser = argparse.ArgumentParser(description="Generate test case for ballot anonymization testing")
+    parser.add_argument("--election-name", "-n", default="Test Election 2024",
+                        help="Name of the election (default: 'Test Election 2024')")
+    args = parser.parse_args()
+    
+    ballots = create_cvr_file(args.election_name)
     print(f"Created CVR file with {len(ballots)} ballots")
     create_probability_spreadsheet(ballots)
     print("Created probability spreadsheet")
