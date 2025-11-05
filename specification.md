@@ -108,6 +108,6 @@ These are aspirational goals that inform the design but are not strictly require
 - This helps with reproducibility and audit verification
 
 ## References
-- Colorado Risk-Limiting Tabulation Audit: Preserving Anonymity of Cast Vote Record (Branscomb et al., March 9, 2018)
+- [Colorado Risk-Limiting Tabulation Audit: Preserving Anonymity of Cast Vote Record](http://www.sos.state.co.us/pubs/rule_making/hearings/2018/20180309BranscombEtAl.pdf) (Branscomb et al., March 9, 2018)
 - Colorado Election Rule 21 (CVR definition)
-- C.R.S. 24-72-205.5 (Open Records Act requirement)
+- [C.R.S. 24-72-205.5](https://codes.findlaw.com/co/title-24-government-state/co-rev-st-sect-24-72-205-5/) (Open Records Act requirement)
