@@ -22,6 +22,10 @@ This is alpha-quality software. Use at your own risk.
 
 - **specification.md**: Detailed specification of requirements, algorithms, and implementation details
 - **AGENTS.md**: Guidelines for AI agent interactions with this codebase
+- **DIFFERENTIAL_PRIVACY_SUMMARY.md**: Executive summary of differential privacy investigation
+- **differential_privacy_analysis.md**: Comprehensive analysis of differential privacy principles and applications
+- **dp_approaches_comparison.md**: Detailed comparison of 5 differential privacy approaches
+- **dp_proof_of_concept.py**: Working demonstration of differential privacy mechanisms
 
 ## Tools
 
@@ -94,6 +98,29 @@ python3 guess_votes.py original_cvr.csv --anonymized-cvr anonymized_cvr.csv
    ```
 
 3. **Compare the three probability files** to quantify how anonymization affects vote guessing accuracy.
+
+## Differential Privacy Research
+
+This repository includes research on applying **differential privacy** (DP) to enhance CVR anonymization beyond k-anonymity. Key findings:
+
+- **Current approach** (k-anonymity): Aggregates rare styles to ensure ≥10 ballots per row
+- **DP enhancement**: Adding calibrated noise provides formal privacy guarantees
+- **Recommended**: Laplace mechanism with ε=2.0 (typical noise ±0.5 votes)
+- **Impact**: Minimal effect on audits (winner preserved >99.9% of the time)
+
+**To explore differential privacy**:
+
+```bash
+# Run interactive DP demonstrations
+python3 dp_proof_of_concept.py
+```
+
+**Documentation**:
+- **DIFFERENTIAL_PRIVACY_SUMMARY.md** - Start here: executive summary and recommendations
+- **differential_privacy_analysis.md** - Deep dive into DP theory and applications  
+- **dp_approaches_comparison.md** - Comparison of 5 different DP approaches
+
+The research shows that differential privacy can be integrated with ~1 week of implementation effort, providing stronger privacy guarantees while maintaining audit effectiveness.
 
 ## Style Analysis
 
