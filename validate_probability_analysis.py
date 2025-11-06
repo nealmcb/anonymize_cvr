@@ -6,6 +6,7 @@ This script reads the three probability CSV files and prints a comparison showin
 how anonymization affects guessing accuracy.
 """
 
+import argparse
 import csv
 import sys
 from typing import Dict, List
@@ -20,9 +21,9 @@ def read_prob_file(filename: str) -> List[Dict[str, str]]:
     except FileNotFoundError:
         print(f"Error: File '{filename}' not found.", file=sys.stderr)
         print("Please run the workflow first:", file=sys.stderr)
-        print("  1. python3 guess_votes.py", file=sys.stderr)
-        print("  2. python3 anonymize_cvr.py test_case_cvr.csv test_case_anonymized.csv", file=sys.stderr)
-        print("  3. python3 guess_votes.py test_case_cvr.csv --anonymized-cvr test_case_anonymized.csv", file=sys.stderr)
+        print("  1. python3 guess_votes.py [original_cvr.csv]", file=sys.stderr)
+        print("  2. python3 anonymize_cvr.py <input_cvr> <output_cvr>", file=sys.stderr)
+        print("  3. python3 guess_votes.py <input_cvr> --anonymized-cvr <output_cvr>", file=sys.stderr)
         sys.exit(1)
 
 
@@ -108,13 +109,37 @@ def print_voter_analysis(voter_num: int, results: List[Dict], original: List[Dic
 
 def main():
     """Main function to validate and display probability analysis."""
+    parser = argparse.ArgumentParser(
+        description='Validate ballot guessing probability analysis by comparing three probability files',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Use default test case files
+  python3 validate_probability_analysis.py
+  
+  # Use custom probability files
+  python3 validate_probability_analysis.py \\
+    --results my_results_probabilities.csv \\
+    --original my_original_probabilities.csv \\
+    --anonymized my_anonymized_probabilities.csv
+        """
+    )
+    parser.add_argument('--results', default='test_case_results_probabilities.csv',
+                       help='Results-only probability file (default: test_case_results_probabilities.csv)')
+    parser.add_argument('--original', default='test_case_original_probabilities.csv',
+                       help='Original CVR probability file (default: test_case_original_probabilities.csv)')
+    parser.add_argument('--anonymized', default='test_case_anonymized_probabilities.csv',
+                       help='Anonymized CVR probability file (default: test_case_anonymized_probabilities.csv)')
+    
+    args = parser.parse_args()
+    
     print("Ballot Guessing Probability Analysis Validation")
     print("=" * 70)
     
     # Read probability files
-    results = read_prob_file('test_case_results_probabilities.csv')
-    original = read_prob_file('test_case_original_probabilities.csv')
-    anonymized = read_prob_file('test_case_anonymized_probabilities.csv')
+    results = read_prob_file(args.results)
+    original = read_prob_file(args.original)
+    anonymized = read_prob_file(args.anonymized)
     
     print(f"\n✓ Successfully read {len(results)} voter records from each file")
     
