@@ -21,6 +21,7 @@ This is alpha-quality software. Use at your own risk.
 ## Documentation
 
 - **specification.md**: Detailed specification of requirements, algorithms, and implementation details
+- **PROBABILITY_ANALYSIS.md**: Analysis of ballot guessing probabilities and how anonymization protects voter privacy
 - **AGENTS.md**: Guidelines for AI agent interactions with this codebase
 
 ## Tools
@@ -93,7 +94,12 @@ python3 guess_votes.py original_cvr.csv --anonymized-cvr anonymized_cvr.csv
    python3 guess_votes.py original_cvr.csv --anonymized-cvr anonymized_cvr.csv
    ```
 
-3. **Compare the three probability files** to quantify how anonymization affects vote guessing accuracy.
+3. **Compare the three probability files** to quantify how anonymization affects vote guessing accuracy:
+   - `test_case_results_probabilities.csv` - Based on overall election results only
+   - `test_case_original_probabilities.csv` - Based on original CVR (may reveal rare voters)
+   - `test_case_anonymized_probabilities.csv` - Based on anonymized CVR (protects rare voters)
+   
+   See **PROBABILITY_ANALYSIS.md** for detailed explanation of the differences and privacy implications.
 
 ## Style Analysis
 
