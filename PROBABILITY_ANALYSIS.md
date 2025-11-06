@@ -128,6 +128,11 @@ python3 guess_votes.py your_cvr.csv --anonymized-cvr your_cvr_anonymized.csv
 # - test_case_results_probabilities.csv
 # - test_case_original_probabilities.csv  
 # - test_case_anonymized_probabilities.csv
+
+# Run the validation script to see a detailed analysis
+python3 validate_probability_analysis.py
 ```
 
 Look for voters where the probability in the original CVR file is significantly higher than in the anonymized file - these are the voters most protected by anonymization.
+
+The `validate_probability_analysis.py` script provides an automated way to verify the analysis and displays detailed privacy improvements for each voter type.

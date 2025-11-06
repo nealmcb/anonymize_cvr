@@ -63,6 +63,9 @@ python3 guess_votes.py original_cvr.csv
 
 # Compare original vs anonymized CVR
 python3 guess_votes.py original_cvr.csv --anonymized-cvr anonymized_cvr.csv
+
+# View detailed probability analysis
+python3 validate_probability_analysis.py
 ```
 
 **Features:**
@@ -81,6 +84,23 @@ python3 guess_votes.py original_cvr.csv --anonymized-cvr anonymized_cvr.csv
 - `--anonymized-cvr, -a`: Path to anonymized CVR file
 - `--election-name, -n`: Name of the election (default: "Test Election 2024")
 - `--min-ballots, -m`: Minimum ballots per style to be considered common (default: 10)
+
+### validate_probability_analysis.py
+
+Validates and visualizes the probability analysis by comparing the three probability files.
+
+**Usage:**
+```bash
+python3 validate_probability_analysis.py
+```
+
+**Features:**
+- Reads all three probability CSV files
+- Displays detailed analysis for key voter types (rare, common-aggregated, common-separate)
+- Calculates privacy improvement/cost for each voter
+- Shows joint guessing probabilities for multi-contest ballots
+- Provides summary of privacy protection effectiveness
+
 
 ## Example Workflow
 
