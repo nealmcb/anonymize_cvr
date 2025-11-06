@@ -16,7 +16,7 @@ This is a research/demonstration tool, not production code.
 
 import random
 import math
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from collections import defaultdict
 
 
@@ -381,7 +381,7 @@ def demonstrate_audit_impact():
     print("=" * 70)
 
 
-if __name__ == "__main__":
+def main():
     """Run all demonstrations."""
     
     print("\n")
@@ -422,3 +422,7 @@ if __name__ == "__main__":
     print()
     print("=" * 70)
     print()
+
+
+if __name__ == "__main__":
+    main()

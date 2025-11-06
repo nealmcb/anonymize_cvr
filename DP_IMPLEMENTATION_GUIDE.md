@@ -13,6 +13,7 @@ Create a new section in `anonymize_cvr.py` or a separate module `dp_noise.py`:
 ```python
 import random
 import math
+from typing import List, Dict, Optional
 
 class DifferentialPrivacyNoise:
     """
