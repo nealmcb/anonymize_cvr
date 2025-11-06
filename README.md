@@ -22,9 +22,14 @@ This is alpha-quality software. Use at your own risk.
 
 - **specification.md**: Detailed specification of requirements, algorithms, and implementation details
 - **AGENTS.md**: Guidelines for AI agent interactions with this codebase
-- **DIFFERENTIAL_PRIVACY_SUMMARY.md**: Executive summary of differential privacy investigation
-- **differential_privacy_analysis.md**: Comprehensive analysis of differential privacy principles and applications
+
+### Differential Privacy Research
+
+- **DP_QUICK_REFERENCE.md**: One-page quick reference for differential privacy ⭐ START HERE
+- **DIFFERENTIAL_PRIVACY_SUMMARY.md**: Executive summary and recommendations
+- **differential_privacy_analysis.md**: Comprehensive analysis of DP principles and applications
 - **dp_approaches_comparison.md**: Detailed comparison of 5 differential privacy approaches
+- **DP_IMPLEMENTATION_GUIDE.md**: Step-by-step integration guide with code examples
 - **dp_proof_of_concept.py**: Working demonstration of differential privacy mechanisms
 
 ## Tools
