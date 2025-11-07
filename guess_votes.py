@@ -19,6 +19,139 @@ import argparse
 import os
 from collections import defaultdict
 
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+
+
+def is_parquet_file(file_path: str) -> bool:
+    """
+    Check if a file is a Parquet file based on its extension.
+    
+    Args:
+        file_path: Path to the file
+    
+    Returns:
+        True if file appears to be a Parquet file, False otherwise
+    """
+    return file_path.lower().endswith('.parquet')
+
+
+def convert_parquet_to_csv_format(parquet_file: str, csv_output: str) -> None:
+    """
+    Convert a Parquet format CVR file to CSV format expected by this tool.
+    
+    The Parquet file is in long format (one row per candidate per contest per voter),
+    while the CSV format is in wide format (one row per voter with columns for each candidate).
+    
+    Args:
+        parquet_file: Path to input Parquet file
+        csv_output: Path to output CSV file
+    
+    Raises:
+        ImportError: If pandas is not available
+        ValueError: If the Parquet file doesn't have expected columns
+    """
+    if not PANDAS_AVAILABLE:
+        raise ImportError(
+            "pandas is required to read Parquet files. "
+            "Install with: pip install pandas pyarrow"
+        )
+    
+    # Read the Parquet file
+    df = pd.read_parquet(parquet_file)
+    
+    # Verify required columns exist
+    required_cols = ['voter_id', 'contest', 'candidate', 'isVote', 'precinctPortionId']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(
+            f"Parquet file missing required columns: {missing_cols}. "
+            f"Found columns: {list(df.columns)}"
+        )
+    
+    # Filter to only actual votes (isVote=True)
+    votes_df = df[df['isVote'] == True].copy()
+    
+    # Get unique voters and contests
+    voters = sorted(votes_df['voter_id'].unique())
+    contests = sorted(votes_df['contest'].unique())
+    
+    # Build a mapping of contest -> candidates
+    contest_candidates = {}
+    for contest in contests:
+        candidates = sorted(votes_df[votes_df['contest'] == contest]['candidate'].unique())
+        contest_candidates[contest] = candidates
+    
+    # Create column headers for CSV format
+    # Line 1: Version/Election name
+    version_row = ["Parquet CVR", "V1"] + [""] * 6
+    
+    # Line 2: Contest names (repeated for each candidate)
+    contests_row = [""] * 8  # Header columns
+    for contest in contests:
+        contests_row.extend([contest] * len(contest_candidates[contest]))
+    
+    # Line 3: Candidate names
+    choices_row = [""] * 8
+    for contest in contests:
+        choices_row.extend(contest_candidates[contest])
+    
+    # Line 4: Column headers
+    headers_row = ["CvrNumber", "TabulatorNum", "BatchId", "RecordId", "ImprintedId",
+                   "CountingGroup", "PrecinctPortion", "BallotType"]
+    for contest in contests:
+        headers_row.extend(contest_candidates[contest])
+    
+    # Create ballot rows
+    ballot_rows = []
+    for idx, voter_id in enumerate(voters, 1):
+        voter_votes = votes_df[votes_df['voter_id'] == voter_id]
+        
+        # Get precinct portion (style) from first row for this voter
+        precinct_portion = str(int(voter_votes['precinctPortionId'].iloc[0]))
+        
+        # Initialize row with headers
+        row = [
+            str(idx),  # CvrNumber
+            "1",  # TabulatorNum
+            "1",  # BatchId
+            str(idx),  # RecordId
+            voter_id,  # ImprintedId (use voter_id)
+            "1",  # CountingGroup
+            precinct_portion,  # PrecinctPortion
+            ""  # BallotType
+        ]
+        
+        # Add vote columns
+        for contest in contests:
+            contest_votes = voter_votes[voter_votes['contest'] == contest]
+            for candidate in contest_candidates[contest]:
+                # Check if this voter voted for this candidate in this contest
+                if len(contest_votes) > 0 and candidate in contest_votes['candidate'].values:
+                    row.append("1")
+                elif len(contest_votes) > 0:
+                    # Contest was on ballot but voter didn't vote for this candidate
+                    row.append("0")
+                else:
+                    # Contest not on voter's ballot
+                    row.append("")
+        
+        ballot_rows.append(row)
+    
+    # Write CSV file
+    with open(csv_output, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f, lineterminator='\n')
+        writer.writerow(version_row)
+        writer.writerow(contests_row)
+        writer.writerow(choices_row)
+        writer.writerow(headers_row)
+        for row in ballot_rows:
+            writer.writerow(row)
+
+
 # Test case configuration
 # 1 ballot in style 1R1 (rare, contest A only)
 # 10 ballots in style 2S2 (common, contests A and B)
@@ -130,42 +263,65 @@ def create_cvr_file(election_name):
     return ballots
 
 def read_cvr_file(cvr_file, headerlen=8, stylecol=6):
-    """Read a CVR file and return ballots grouped by style."""
-    ballots_by_style = defaultdict(list)
+    """Read a CVR file (CSV or Parquet) and return ballots grouped by style."""
+    import tempfile
     
-    with open(cvr_file, 'r', encoding='utf-8') as f:
-        reader = csv.reader(f)
-        # Skip headers
-        next(reader)  # version
-        next(reader)  # contests
-        next(reader)  # choices
-        next(reader)  # headers
+    # Check if input is Parquet format and convert if needed
+    temp_csv = None
+    if is_parquet_file(cvr_file):
+        # Create temporary CSV file
+        temp_csv = tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False)
+        temp_csv_path = temp_csv.name
+        temp_csv.close()
         
-        for row in reader:
-            if len(row) <= stylecol:
-                continue
-            
-            style = row[stylecol].strip()
-            votes = []
-            for v in row[headerlen:]:
-                v = v.strip()
-                if v == "":
-                    votes.append("")
-                elif v == "0" or v == "1":
-                    votes.append(int(v))
-                else:
-                    # Try to parse as integer (aggregated rows have vote counts)
-                    try:
-                        votes.append(int(v))
-                    except ValueError:
-                        votes.append(v)
-            
-            ballots_by_style[style].append({
-                "style": style,
-                "votes": votes
-            })
+        convert_parquet_to_csv_format(cvr_file, temp_csv_path)
+        cvr_file = temp_csv_path
     
-    return ballots_by_style
+    try:
+        ballots_by_style = defaultdict(list)
+        
+        with open(cvr_file, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            # Skip headers
+            next(reader)  # version
+            next(reader)  # contests
+            next(reader)  # choices
+            next(reader)  # headers
+            
+            for row in reader:
+                if len(row) <= stylecol:
+                    continue
+                
+                style = row[stylecol].strip()
+                votes = []
+                for v in row[headerlen:]:
+                    v = v.strip()
+                    if v == "":
+                        votes.append("")
+                    elif v == "0" or v == "1":
+                        votes.append(int(v))
+                    else:
+                        # Try to parse as integer (aggregated rows have vote counts)
+                        try:
+                            votes.append(int(v))
+                        except ValueError:
+                            votes.append(v)
+                
+                ballots_by_style[style].append({
+                    "style": style,
+                    "votes": votes
+                })
+        
+        return ballots_by_style
+    
+    finally:
+        # Clean up temporary CSV file if we created one
+        if temp_csv is not None:
+            try:
+                import os
+                os.unlink(temp_csv_path)
+            except Exception:
+                pass  # Ignore cleanup errors
 
 def read_ballots_from_cvr(cvr_file, headerlen=8, stylecol=6):
     """Read ballots from CVR file and return in format needed for probability calculation."""
@@ -501,11 +657,11 @@ def create_probability_spreadsheets(ballots, original_cvr_file=None, anonymized_
         write_probability_spreadsheet(ballots, "test_case_anonymized_probabilities.csv", overall_probs, style_probs=None)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate test case for ballot anonymization testing")
+    parser = argparse.ArgumentParser(description="Generate test case for ballot anonymization testing (supports CSV and Parquet formats)")
     parser.add_argument("original_cvr_file", nargs="?", default=None,
-                        help="Path to original CVR file (default: generate test case and use it)")
+                        help="Path to original CVR file (CSV or Parquet format) (default: generate test case and use it)")
     parser.add_argument("--anonymized-cvr", "-a", default=None,
-                        help="Path to anonymized CVR file to compare probabilities")
+                        help="Path to anonymized CVR file (CSV or Parquet format) to compare probabilities")
     parser.add_argument("--election-name", "-n", default="Test Election 2024",
                         help="Name of the election (default: 'Test Election 2024')")
     parser.add_argument("--min-ballots", "-m", type=int, default=10,
