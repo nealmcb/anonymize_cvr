@@ -27,16 +27,18 @@ This is alpha-quality software. Use at your own risk.
 
 ### anonymize_cvr.py
 
-Anonymizes CVR files by aggregating rare styles to meet the 10-ballot minimum threshold.
+Anonymizes CVR files by aggregating rare styles to meet the 10-ballot minimum threshold. Supports both CSV and Parquet file formats.
 
 **Usage:**
 ```bash
 python3 anonymize_cvr.py input.csv output.csv
+python3 anonymize_cvr.py input.parquet output.csv
 python3 anonymize_cvr.py input.csv output.csv --min-ballots 15
 python3 anonymize_cvr.py input.csv output.csv --summarize
 ```
 
 **Features:**
+- Supports CSV and Parquet file formats (auto-detected by file extension)
 - Aggregates rare styles (< 10 ballots) with similar styles to meet threshold
 - Computes descriptive style names based on contest patterns
 - Detects information leakage when different CVR style names map to the same contest pattern
@@ -50,7 +52,7 @@ python3 anonymize_cvr.py input.csv output.csv --summarize
 
 ### guess_votes.py
 
-Generates test cases and analyzes how anonymization affects vote guessing probabilities.
+Generates test cases and analyzes how anonymization affects vote guessing probabilities. Supports both CSV and Parquet file formats.
 
 **Usage:**
 ```bash
@@ -59,12 +61,14 @@ python3 guess_votes.py
 
 # Analyze an existing CVR file
 python3 guess_votes.py original_cvr.csv
+python3 guess_votes.py original_cvr.parquet
 
 # Compare original vs anonymized CVR
 python3 guess_votes.py original_cvr.csv --anonymized-cvr anonymized_cvr.csv
 ```
 
 **Features:**
+- Supports CSV and Parquet file formats (auto-detected by file extension)
 - Generates test CVR files with configurable ballot styles
 - Calculates vote probabilities from:
   - Overall election results
@@ -76,10 +80,17 @@ python3 guess_votes.py original_cvr.csv --anonymized-cvr anonymized_cvr.csv
   - `test_case_anonymized_probabilities.csv`: Anonymized CVR-refined probabilities
 
 **Options:**
-- `original_cvr_file`: Path to original CVR file (positional, optional)
-- `--anonymized-cvr, -a`: Path to anonymized CVR file
+- `original_cvr_file`: Path to original CVR file (CSV or Parquet format) (positional, optional)
+- `--anonymized-cvr, -a`: Path to anonymized CVR file (CSV or Parquet format)
 - `--election-name, -n`: Name of the election (default: "Test Election 2024")
 - `--min-ballots, -m`: Minimum ballots per style to be considered common (default: 10)
+
+### cvr_utils.py
+
+Shared utility module for reading CVR files in different formats. This module provides:
+- Automatic format detection (CSV vs Parquet)
+- Conversion from Parquet to CSV format
+- `TempCVRFile` context manager for seamless handling of both formats
 
 ## Example Workflow
 
@@ -106,4 +117,6 @@ The anonymization tool automatically:
 ## Requirements
 
 - Python 3.12+
-- Standard library only (csv, collections, typing)
+- Standard library only (csv, collections, typing) for CSV files
+- Optional: `pandas` and `pyarrow` for Parquet file support
+  - Install with: `pip install pandas pyarrow`
