@@ -3,9 +3,11 @@
 ## Goal
 Automatically anonymize a CVR (Cast Vote Record) file to meet the Colorado requirement that styles with fewer than 10 ballots per style must be anonymized to protect voter privacy.
 
-## Legal Background
+## Background
 - **Colorado Open Records Act (C.R.S. 24-72-205.5)**: Requires counties to cover or redact before "making available for public inspection" a voted ballot if there are fewer than 10 instances of the ballot's style in the election.
 - **Colorado Risk-Limiting Tabulation Audit**: CVRs must be available for public audit purposes while preserving ballot anonymity.
+
+- **[Privacy violations in election results \| Science Advances](https://www.science.org/doi/10.1126/sciadv.adt1512)** Shiro Kuriwaki, Jeffrey B. Lewis, and Michael Morse  on "vote revelation" etc.
 
 ## Core Requirements
 
