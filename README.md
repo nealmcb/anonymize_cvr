@@ -39,9 +39,18 @@ python3 anonymize_cvr.py input.csv output.csv --summarize
 
 **Features:**
 - Supports CSV and Parquet file formats (auto-detected by file extension)
-- Aggregates rare styles (< 10 ballots) with similar styles to meet threshold
+- Combines all rare styles (< 10 ballots) into a single aggregation
+- Ensures at least 10 ballots per contest in the aggregation
+- Adds contrasting votes to prevent unanimous/near-unanimous patterns
 - Computes descriptive style names based on contest patterns
 - Detects information leakage when different CVR style names map to the same contest pattern
+- Automatic tally verification ensures vote totals match between original and anonymized CVR
+- Comprehensive aggregation statistics showing:
+  - Totals after including all rare styles
+  - Contests needing additional ballots
+  - Contests needing balancing (unanimous/near-unanimous patterns)
+  - Total extra CVRs added to aggregate
+  - Final aggregate totals
 - Optional summary statistics with `--summarize` flag
 
 **Options:**
@@ -106,6 +115,19 @@ Shared utility module for reading CVR files in different formats. This module pr
 
 3. **Compare the three probability files** to quantify how anonymization affects vote guessing accuracy.
 
+## Aggregation Approach
+
+The anonymization tool uses a balance-focused approach:
+
+1. **Combine all rare styles**: All ballots from rare styles (< 10 ballots) are combined into a single aggregation
+2. **Meet minimum thresholds**: If needed, ballots are borrowed from common styles to ensure:
+   - At least 10 ballots total in the aggregation
+   - At least 10 ballots per contest in the aggregation
+3. **Balance votes**: The tool checks for unanimous or near-unanimous patterns (all but 2 votes for the same candidate) and adds contrasting votes from common styles to break these patterns
+4. **Verify tallies**: Before delivering the redacted CVR, vote tallies are automatically verified to match the original
+
+This approach minimizes the number of ballots that need to be redacted while ensuring both anonymity and statistical balance.
+
 ## Style Analysis
 
 The anonymization tool automatically:
@@ -113,6 +135,7 @@ The anonymization tool automatically:
 - Maps CVR style names to descriptive style names
 - Detects information leakage when different CVR style names are used for ballots with the same contest pattern
 - Provides optional summaries showing vote totals and probabilities by style
+- Displays detailed aggregation statistics including totals, contests needing balancing, and extra CVRs added
 
 ## Requirements
 
