@@ -16,7 +16,7 @@ Based on:
 import csv
 import sys
 from collections import defaultdict
-from typing import List, Dict
+from typing import List, Dict, Tuple, Any
 
 from cvr_utils import TempCVRFile, is_parquet_file
 
@@ -134,6 +134,398 @@ def style_similarity(sig1: str, sig2: str) -> float:
         return 1.0 if pattern1 == pattern2 else 0.0
 
     return intersection / union
+
+
+def tally_cvr_votes(
+    rows: List[List[str]],
+    contests: List[str],
+    choices: List[str],
+    headerlen: int = 8,
+) -> Dict[str, Dict[str, int]]:
+    """
+    Tally votes from CVR rows (handles both individual ballots and aggregated rows).
+
+    Args:
+        rows: List of CVR data rows (individual ballots or aggregated rows)
+        contests: Contest names row from CVR header
+        choices: Choice names row from CVR header
+        headerlen: Number of header columns before vote data starts
+
+    Returns:
+        Dictionary mapping contest names to dictionaries of choice names to vote counts
+    """
+    # Map contest names to their column indices
+    contest_to_columns: Dict[str, List[tuple]] = defaultdict(list)
+    for col_idx in range(headerlen, len(contests)):
+        contest_name = contests[col_idx].strip()
+        if contest_name and col_idx < len(choices):
+            choice_name = choices[col_idx].strip()
+            contest_to_columns[contest_name].append((col_idx, choice_name))
+
+    # Tally votes for each contest
+    contest_totals: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for row in rows:
+        if len(row) <= headerlen:
+            continue
+
+        # Check if this is an aggregated row (CvrNumber starts with "AGGREGATED-")
+        is_aggregated = len(row) > 0 and row[0].strip().startswith("AGGREGATED-")
+
+        for contest_name, col_choice_pairs in contest_to_columns.items():
+            for col_idx, choice_name in col_choice_pairs:
+                if col_idx < len(row):
+                    val = row[col_idx].strip()
+                    if val:
+                        try:
+                            if is_aggregated:
+                                # Aggregated row: value is already a count
+                                vote_count = int(float(val))
+                            else:
+                                # Individual ballot: value is 0 or 1
+                                vote_count = 1 if (val == "1" or val == 1) else 0
+
+                            if vote_count > 0:
+                                contest_totals[contest_name][choice_name] += vote_count
+                        except (ValueError, TypeError):
+                            pass
+
+    return dict(contest_totals)
+
+
+def tally_aggregated_votes_by_contest(
+    aggregated_row: List[str],
+    contests: List[str],
+    choices: List[str],
+    headerlen: int = 8,
+) -> Dict[str, Dict[str, int]]:
+    """
+    Tally votes from an aggregated row by contest and choice.
+
+    Args:
+        aggregated_row: Aggregated CVR row (with vote counts as integers)
+        contests: Contest names row from CVR header
+        choices: Choice names row from CVR header
+        headerlen: Number of header columns before vote data starts
+
+    Returns:
+        Dictionary mapping contest names to dictionaries of choice names to vote counts
+    """
+    return tally_cvr_votes([aggregated_row], contests, choices, headerlen)
+
+
+def verify_tally_match(
+    original_file: str,
+    anonymized_file: str,
+    headerlen: int = 8,
+) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Verify that vote tallies in anonymized CVR match the original CVR.
+
+    Args:
+        original_file: Path to original CVR file
+        anonymized_file: Path to anonymized CVR file
+        headerlen: Number of header columns before vote data starts
+
+    Returns:
+        Tuple of (match: bool, details: dict) where details contains mismatch information
+    """
+    from cvr_utils import TempCVRFile, is_parquet_file
+
+    # Read original CVR
+    with TempCVRFile(original_file) as orig_csv:
+        with open(orig_csv, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            orig_version = next(reader)
+            orig_contests = next(reader)
+            orig_choices = next(reader)
+            orig_headers = next(reader)
+            orig_rows = list(reader)
+
+    # Read anonymized CVR
+    with TempCVRFile(anonymized_file) as anon_csv:
+        with open(anon_csv, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            anon_version = next(reader)
+            anon_contests = next(reader)
+            anon_choices = next(reader)
+            anon_headers = next(reader)
+            anon_rows = list(reader)
+
+    # Tally votes
+    orig_totals = tally_cvr_votes(orig_rows, orig_contests, orig_choices, headerlen)
+    anon_totals = tally_cvr_votes(anon_rows, anon_contests, anon_choices, headerlen)
+
+    # Compare tallies
+    all_contests = set(orig_totals.keys()) | set(anon_totals.keys())
+    mismatches = []
+    match = True
+
+    for contest_name in sorted(all_contests):
+        orig_choices_dict = orig_totals.get(contest_name, {})
+        anon_choices_dict = anon_totals.get(contest_name, {})
+
+        all_choices = set(orig_choices_dict.keys()) | set(anon_choices_dict.keys())
+        for choice_name in sorted(all_choices):
+            orig_count = orig_choices_dict.get(choice_name, 0)
+            anon_count = anon_choices_dict.get(choice_name, 0)
+            if orig_count != anon_count:
+                match = False
+                mismatches.append(
+                    {
+                        "contest": contest_name,
+                        "choice": choice_name,
+                        "original": orig_count,
+                        "anonymized": anon_count,
+                        "difference": anon_count - orig_count,
+                    }
+                )
+
+    details = {
+        "match": match,
+        "mismatches": mismatches,
+        "original_totals": orig_totals,
+        "anonymized_totals": anon_totals,
+    }
+
+    return match, details
+
+
+def check_unanimous_patterns(
+    contest_totals: Dict[str, Dict[str, int]], total_ballots: int
+) -> List[tuple]:
+    """
+    Check for unanimous or near-unanimous vote patterns in aggregated results.
+
+    A pattern is considered near-unanimous if all but 2 votes (or fewer) are for the same candidate.
+
+    Args:
+        contest_totals: Dictionary mapping contest names to choice vote counts
+        total_ballots: Total number of ballots in the aggregation
+
+    Returns:
+        List of tuples (contest_name, winning_choice, vote_count, total_votes) for unanimous/near-unanimous contests
+    """
+    problematic_contests = []
+    for contest_name, choice_votes in contest_totals.items():
+        if not choice_votes:
+            continue
+
+        total_votes = sum(choice_votes.values())
+        if total_votes == 0:
+            continue
+
+        # Find the choice with the most votes
+        max_choice = max(choice_votes.items(), key=lambda x: x[1])
+        max_votes = max_choice[1]
+        other_votes = total_votes - max_votes
+
+        # Check if all but 2 or fewer votes are for the same candidate
+        # (near-unanimous: at most 2 votes for other candidates)
+        if other_votes <= 2:
+            problematic_contests.append(
+                (contest_name, max_choice[0], max_votes, total_votes)
+            )
+
+    return problematic_contests
+
+
+def find_ballots_with_contest(
+    contest_name: str,
+    common_styles: Dict[str, List[List[str]]],
+    contests: List[str],
+    headerlen: int = 8,
+    min_ballots: int = 10,
+    needed_count: int = 10,
+    exclude_cvr_numbers: set = None,
+) -> List[List[str]]:
+    """
+    Find ballots from common styles that have a specific contest.
+
+    Args:
+        contest_name: Contest name to find ballots for
+        common_styles: Dictionary of common style signatures to their ballot rows
+        contests: Contest names row from CVR header
+        headerlen: Number of header columns before vote data starts
+        min_ballots: Minimum ballots per style (common styles must have > this)
+        needed_count: Number of ballots needed
+        exclude_cvr_numbers: Set of CvrNumbers to exclude (already used)
+
+    Returns:
+        List of ballot rows that have the specified contest
+    """
+    if exclude_cvr_numbers is None:
+        exclude_cvr_numbers = set()
+
+    # Find column indices for the contest
+    contest_col_indices = []
+    for col_idx in range(headerlen, len(contests)):
+        if contests[col_idx].strip() == contest_name:
+            contest_col_indices.append(col_idx)
+
+    if not contest_col_indices:
+        return []  # Contest not found
+
+    found_ballots = []
+    for style_sig, rows in common_styles.items():
+        if len(rows) <= min_ballots:
+            continue  # Only use styles with more than min_ballots
+
+        for row in rows:
+            if len(row) <= headerlen:
+                continue
+
+            # Check CvrNumber
+            if len(row) > 0:
+                cvr_num = row[0].strip()
+                if cvr_num in exclude_cvr_numbers:
+                    continue
+
+            # Check if this ballot has the contest (any column for this contest is non-empty)
+            has_contest = any(
+                col_idx < len(row) and row[col_idx].strip() != ""
+                for col_idx in contest_col_indices
+            )
+
+            if has_contest:
+                found_ballots.append(row)
+                if len(found_ballots) >= needed_count:
+                    return found_ballots
+
+    return found_ballots
+
+
+def find_contrasting_ballots_multi(
+    problematic_contests: List[tuple],
+    common_styles: Dict[str, List[List[str]]],
+    contests: List[str],
+    choices: List[str],
+    headerlen: int = 8,
+    min_ballots: int = 10,
+) -> List[List[str]]:
+    """
+    Find ballots from common styles that vote differently for multiple problematic contests.
+
+    This minimizes the number of ballots needed by finding ballots that satisfy multiple
+    contrasting vote requirements simultaneously.
+
+    Args:
+        problematic_contests: List of tuples (contest_name, winning_choice, vote_count, total_votes)
+        common_styles: Dictionary of common style signatures to their ballot rows
+        contests: Contest names row from CVR header
+        choices: Choice names row from CVR header
+        headerlen: Number of header columns before vote data starts
+        min_ballots: Minimum ballots per style (common styles must have > this)
+
+    Returns:
+        List of ballot rows that vote differently in one or more problematic contests
+    """
+    if not problematic_contests:
+        return []
+
+    # Build mapping of contest to column indices and winning choice column
+    contest_info = {}
+    for contest_name, winning_choice, _, _ in problematic_contests:
+        contest_col_indices = []
+        for col_idx in range(headerlen, len(contests)):
+            if contests[col_idx].strip() == contest_name:
+                contest_col_indices.append(col_idx)
+
+        if not contest_col_indices:
+            continue
+
+        # Find winning choice column index
+        winning_col_idx = None
+        for col_idx in contest_col_indices:
+            if col_idx < len(choices) and choices[col_idx].strip() == winning_choice:
+                winning_col_idx = col_idx
+                break
+
+        contest_info[contest_name] = {
+            "col_indices": contest_col_indices,
+            "winning_col_idx": winning_col_idx,
+        }
+
+    # Score each ballot by how many problematic contests it votes differently in
+    ballot_scores = []
+    for style_sig, rows in common_styles.items():
+        if len(rows) <= min_ballots:
+            continue  # Only use styles with more than min_ballots
+
+        for row in rows:
+            if len(row) <= headerlen:
+                continue
+
+            # Check which problematic contests this ballot votes differently in
+            satisfied_contests = []
+            for contest_name, _, _, _ in problematic_contests:
+                if contest_name not in contest_info:
+                    continue
+
+                info = contest_info[contest_name]
+                contest_col_indices = info["col_indices"]
+                winning_col_idx = info["winning_col_idx"]
+
+                # Check if ballot has this contest
+                has_contest = any(
+                    col_idx < len(row) and row[col_idx].strip() != ""
+                    for col_idx in contest_col_indices
+                )
+                if not has_contest:
+                    continue
+
+                # Check if votes differently
+                votes_differently = False
+                if winning_col_idx is not None and winning_col_idx < len(row):
+                    if row[winning_col_idx].strip() != "1":
+                        # Check if voted for any other choice
+                        for col_idx in contest_col_indices:
+                            if col_idx != winning_col_idx and col_idx < len(row):
+                                if row[col_idx].strip() == "1":
+                                    votes_differently = True
+                                    satisfied_contests.append(contest_name)
+                                    break
+
+            if satisfied_contests:
+                # Score: number of contests satisfied, prefer ballots that satisfy more
+                ballot_scores.append((len(satisfied_contests), satisfied_contests, row))
+
+    # Sort by score (highest first) to prioritize ballots that satisfy multiple contests
+    ballot_scores.sort(key=lambda x: x[0], reverse=True)
+
+    # Greedily select ballots to cover all problematic contests
+    # Track which contests still need contrasting votes
+    contests_needed = {contest_name for contest_name, _, _, _ in problematic_contests}
+    selected_ballots = []
+    satisfied_contests_set = set()
+
+    for score, satisfied, row in ballot_scores:
+        # Check if this ballot helps with any remaining needed contests
+        row_contests = set(satisfied)
+        if row_contests & contests_needed:
+            selected_ballots.append(row)
+            satisfied_contests_set.update(row_contests)
+            contests_needed -= row_contests
+
+            # If we've satisfied all contests, we might still need a few more
+            # to ensure we have at least 3 contrasting votes per contest
+            if not contests_needed:
+                # Count how many ballots we have for each contest
+                contest_counts = {}
+                for _, satisfied_list, _ in ballot_scores[: len(selected_ballots)]:
+                    for c in satisfied_list:
+                        contest_counts[c] = contest_counts.get(c, 0) + 1
+
+                # Check if we need more for any contest (want at least 3)
+                all_sufficient = True
+                for contest_name, _, _, _ in problematic_contests:
+                    if contest_counts.get(contest_name, 0) < 3:
+                        all_sufficient = False
+                        contests_needed.add(contest_name)
+
+                if all_sufficient:
+                    break
+
+    return selected_ballots
 
 
 def compute_contest_pattern(row: List[str], contests: List[str], headerlen: int = 8) -> str:
@@ -408,6 +800,14 @@ def anonymize_cvr(
         "aggregated_rows": 0,
         "original_styles": 0,
         "final_styles": 0,
+        "rare_ballots_initial": 0,
+        "ballots_borrowed_for_minimum": 0,
+        "contests_needing_ballots": {},
+        "ballots_added_for_contests": 0,
+        "contests_needing_balancing": [],
+        "ballots_added_for_balancing": 0,
+        "final_aggregate_totals": {},
+        "totals_after_rare_styles": {},
     }
 
     # Use context manager to handle Parquet conversion if needed
@@ -498,9 +898,8 @@ def anonymize_cvr(
         else:
             common_styles[style_sig] = rows
 
-    # Aggregate rare styles into groups of at least min_ballots
-    # Strategy: Group similar rare styles together, and combine with common styles if needed
-    # Prefer combining with popular/common styles that share similar contests
+    # NEW APPROACH: Combine all rare styles into one aggregation
+    # Focus on balance (avoid unanimous patterns) and minimums per contest
 
     # Count total rare ballots
     total_rare_ballots = sum(len(rows) for rows in rare_styles.values())
@@ -509,213 +908,189 @@ def anonymize_cvr(
     if total_rare_ballots == 0:
         row_groups = []
     else:
-        # Build groups by combining rare styles, and with common styles if needed
-        # We'll use a greedy algorithm: repeatedly find the best pair of groups to merge
+        # Step 1: Collect ALL rare ballots into one list
+        all_rare_ballots = []
+        for rows in rare_styles.values():
+            all_rare_ballots.extend(rows)
 
-        # Start with each rare style as its own group
-        style_groups_list = [
-            {
-                "styles": [style_sig],
-                "rows": rows.copy(),
-                "size": len(rows),
-                "is_rare": True,  # Track if group contains rare styles (needs aggregation)
-            }
-            for style_sig, rows in rare_styles.items()
-        ]
+        stats["rare_ballots_initial"] = len(all_rare_ballots)
 
-        # Also create groups for common styles (we may need to borrow ballots from them)
-        # Sort common styles by size (most popular first) for preference
-        common_style_list = sorted(
-            [(style_sig, rows) for style_sig, rows in common_styles.items()],
-            key=lambda x: len(x[1]),
-            reverse=True,
-        )
+        # Calculate totals after including all rare styles
+        if headerlen < len(contests):
+            temp_agg_after_rare = aggregate_votes(all_rare_ballots, headerlen, aggregate_id="TEMP")
+            stats["totals_after_rare_styles"] = tally_aggregated_votes_by_contest(
+                temp_agg_after_rare, contests, choices, headerlen
+            )
 
-        # Greedily merge groups until all rare groups have >= min_ballots
-        # We can merge rare groups with each other or with common groups
-        while True:
-            # Find rare groups that need more ballots
-            rare_groups = [g for g in style_groups_list if g["is_rare"] and g["size"] < min_ballots]
-            if not rare_groups:
-                break  # All rare groups meet threshold
-
-            # Find the best merge option
-            best_merge = None
-            best_score = -1
-            merge_with_common = False
-            common_style_to_use = None
-
-            for rare_group in rare_groups:
-                needed = min_ballots - rare_group["size"]
-
-                # Option 1: Merge with another rare/common group in style_groups_list
-                for j, other_group in enumerate(style_groups_list):
-                    if other_group is rare_group:
-                        continue
-
-                    combined_size = rare_group["size"] + other_group["size"]
-
-                    # Calculate average similarity
-                    similarities = []
-                    for s1 in rare_group["styles"]:
-                        for s2 in other_group["styles"]:
-                            similarities.append(style_similarity(s1, s2))
-                    avg_similarity = sum(similarities) / len(similarities) if similarities else 0.0
-
-                    # Score: prioritize reaching threshold with similar styles
-                    if combined_size >= min_ballots:
-                        # High priority: reaches threshold
-                        # If merging with common style, give bonus for popularity (size)
-                        bonus = other_group["size"] if not other_group["is_rare"] else 0
-                        score = 1000 + avg_similarity * 100 + bonus
-                    else:
-                        # Lower priority: doesn't reach threshold yet
-                        score = combined_size + (avg_similarity * 10)
-
-                    if score > best_score:
-                        best_score = score
-                        best_merge = (rare_group, j, None)
-                        merge_with_common = False
-
-                # Option 2: Borrow ballots from a common style
-                for style_sig, common_rows in common_style_list:
-                    # Calculate how many we can borrow
-                    # If borrowing would leave fewer than min_ballots, take all of them
-                    # This avoids leaving behind what looks like a rare style
-                    remaining_after_borrow = len(common_rows) - needed
-                    if remaining_after_borrow < min_ballots and remaining_after_borrow > 0:
-                        # Take all ballots to avoid leaving a rare-looking style
-                        available = len(common_rows)
-                    else:
-                        # Borrow only what we need
-                        available = min(needed, len(common_rows))
-
-                    if available <= 0:
-                        continue  # Can't borrow from this style
-
-                    # Calculate similarity
-                    similarities = [
-                        style_similarity(rare_sig, style_sig) for rare_sig in rare_group["styles"]
-                    ]
-                    avg_similarity = sum(similarities) / len(similarities) if similarities else 0.0
-
-                    # Score: prefer popular styles (large size) and similar styles
-                    # High priority since we know we can reach threshold
-                    score = 2000 + avg_similarity * 100 + len(common_rows)
-
-                    if score > best_score:
-                        best_score = score
-                        best_merge = (rare_group, None, (style_sig, available))
-                        merge_with_common = True
-                        common_style_to_use = (style_sig, common_rows)
-
-            if best_merge is None:
-                # Cannot create aggregates meeting threshold
+        # Step 2: If we don't have enough ballots, borrow from common styles to reach min_ballots
+        if len(all_rare_ballots) < min_ballots:
+            needed = min_ballots - len(all_rare_ballots)
+            # Borrow ballots from the largest common style
+            if common_styles:
+                # Sort by size (largest first)
+                sorted_common = sorted(
+                    common_styles.items(), key=lambda x: len(x[1]), reverse=True
+                )
+                style_sig, common_rows = sorted_common[0]
+                
+                # Calculate how many we can borrow
+                remaining_after_borrow = len(common_rows) - needed
+                if remaining_after_borrow < min_ballots and remaining_after_borrow > 0:
+                    # Take all ballots to avoid leaving a rare-looking style
+                    borrowed = common_rows[:]
+                    common_styles[style_sig] = []
+                    if len(common_styles[style_sig]) == 0:
+                        del common_styles[style_sig]
+                else:
+                    # Borrow only what we need
+                    borrowed = common_rows[:needed]
+                    common_styles[style_sig] = common_rows[needed:]
+                    if len(common_styles[style_sig]) < min_ballots:
+                        del common_styles[style_sig]
+                
+                all_rare_ballots.extend(borrowed)
+                stats["ballots_borrowed_for_minimum"] = len(borrowed)
+            else:
+                # No common styles to borrow from
                 raise ValueError(
                     f"Cannot anonymize: {total_rare_ballots} rare ballot(s) found, "
-                    f"but cannot create aggregate(s) with at least {min_ballots} ballots each. "
-                    f"These ballots cannot be safely anonymized through aggregation. "
-                    f"They may need to be handled as 'zombies' (not publicly accessible) "
-                    f"or require alternative anonymization methods."
+                    f"but cannot create aggregate with at least {min_ballots} ballots. "
+                    f"No common styles available to borrow from."
                 )
 
-            rare_group, other_idx, borrow_info = best_merge
-
-            if merge_with_common and borrow_info:
-                # Borrow ballots from common style
-                style_sig, needed_count = borrow_info
-                common_rows = common_style_to_use[1]
-
-                # Take ballots from the common style
-                borrowed_rows = common_rows[:needed_count]
-                common_style_rows_remaining = common_rows[needed_count:]
-
-                # Add to rare group
-                rare_group["styles"].append(style_sig)
-                rare_group["rows"].extend(borrowed_rows)
-                rare_group["size"] += needed_count
-
-                # Update common style (remove borrowed ballots)
-                # Find and update the common style group if it exists, or update the list
-                common_styles[style_sig] = common_style_rows_remaining
-                # Update the common_style_list for next iteration
-                common_style_list = [
-                    (sig, rows)
-                    for sig, rows in common_style_list
-                    if sig != style_sig or len(rows) > min_ballots
-                ]
-                if len(common_style_rows_remaining) >= min_ballots:
-                    # Reinsert in sorted position
-                    common_style_list.append((style_sig, common_style_rows_remaining))
-                    common_style_list.sort(key=lambda x: len(x[1]), reverse=True)
-
-            else:
-                # Merge two existing groups
-                other_group = style_groups_list[other_idx]
-
-                # Merge other_group into rare_group
-                rare_group["styles"].extend(other_group["styles"])
-                rare_group["rows"].extend(other_group["rows"])
-                rare_group["size"] += other_group["size"]
-                rare_group["is_rare"] = rare_group["is_rare"] or other_group["is_rare"]
-
-                # Remove other_group
-                style_groups_list.pop(other_idx)
-
-        # Verify all rare groups meet threshold
-        for g in style_groups_list:
-            if g["is_rare"] and g["size"] < min_ballots:
-                raise RuntimeError(
-                    f"Internal error: created aggregate with only {g['size']} ballots, "
-                    f"which is below the {min_ballots}-ballot threshold. "
-                    f"This should not happen."
-                )
-
-        # Extract row groups (only rare groups need to be aggregated)
-        row_groups = [g["rows"] for g in style_groups_list if g["is_rare"]]
-
-        # Update common_styles to reflect any borrowed ballots
-        # (common_styles dict was updated during the merge process)
-
-        # Optional: Verify that each contest appears at least min_ballots times across aggregates
-        # This helps ensure that aggregated rows provide enough diversity for anonymity
-        # Note: This is a best-effort check - if a contest only appears on a few rare ballots,
-        # we can't enforce this without excluding ballots, which we don't do
-        if row_groups and headerlen < len(contests):
-            # Map contest names to the set of column indices that belong to that contest
+        # Step 3: Ensure at least min_ballots per contest in the aggregation
+        if headerlen < len(contests):
+            # Map contest names to column indices
             contest_to_columns = defaultdict(set)
             for col_idx in range(headerlen, len(contests)):
                 contest_name = contests[col_idx].strip()
                 if contest_name:
                     contest_to_columns[contest_name].add(col_idx)
 
-            # Count how many individual ballots have each contest
+            # Count how many ballots have each contest
             contest_ballot_counts = defaultdict(int)
-            for group in row_groups:
-                for row in group:
-                    for contest_name, col_indices in contest_to_columns.items():
-                        # Check if any column for this contest is non-empty (contest appears on this ballot)
-                        if any(
-                            col_idx < len(row) and row[col_idx].strip() for col_idx in col_indices
-                        ):
-                            contest_ballot_counts[contest_name] += 1
+            aggregation_cvr_numbers = set()
+            for row in all_rare_ballots:
+                if len(row) > 0:
+                    cvr_num = row[0].strip()
+                    if cvr_num:
+                        aggregation_cvr_numbers.add(cvr_num)
+                
+                for contest_name, col_indices in contest_to_columns.items():
+                    # Check if any column for this contest is non-empty
+                    if any(
+                        col_idx < len(row) and row[col_idx].strip() != ""
+                        for col_idx in col_indices
+                    ):
+                        contest_ballot_counts[contest_name] += 1
 
-            # Warn if any contest appears on fewer than min_ballots ballots across aggregates
-            low_contest_counts = {
-                contest_name: count
-                for contest_name, count in contest_ballot_counts.items()
-                if count < min_ballots
-            }
-            if low_contest_counts:
-                import warnings
+            # Find contests that need more ballots
+            contests_needing_ballots = {}
+            for contest_name, count in contest_ballot_counts.items():
+                if count < min_ballots:
+                    needed = min_ballots - count
+                    contests_needing_ballots[contest_name] = needed
 
-                for contest_name, count in low_contest_counts.items():
-                    warnings.warn(
-                        f"Contest '{contest_name[:60]}' appears on only {count} ballot(s) in aggregated rows, "
-                        f"which is below the {min_ballots}-ballot threshold. "
-                        f"This may reduce anonymity protection for this contest.",
-                        UserWarning,
-                    )
+            stats["contests_needing_ballots"] = dict(contests_needing_ballots)
+
+            # Add ballots for contests that need them
+            additional_ballots = []
+            for contest_name, needed in contests_needing_ballots.items():
+                found = find_ballots_with_contest(
+                    contest_name,
+                    common_styles,
+                    contests,
+                    headerlen,
+                    min_ballots,
+                    needed_count=needed,
+                    exclude_cvr_numbers=aggregation_cvr_numbers,
+                )
+                additional_ballots.extend(found)
+                # Update exclusion set
+                for row in found:
+                    if len(row) > 0:
+                        cvr_num = row[0].strip()
+                        if cvr_num:
+                            aggregation_cvr_numbers.add(cvr_num)
+
+            # Add additional ballots to aggregation
+            all_rare_ballots.extend(additional_ballots)
+            stats["ballots_added_for_contests"] = len(additional_ballots)
+
+            # Update common_styles to remove borrowed ballots
+            if additional_ballots:
+                additional_cvr_numbers = set()
+                for row in additional_ballots:
+                    if len(row) > 0:
+                        cvr_num = row[0].strip()
+                        if cvr_num:
+                            additional_cvr_numbers.add(cvr_num)
+
+                # Remove borrowed ballots from common_styles
+                for style_sig in list(common_styles.keys()):
+                    remaining_rows = [
+                        row
+                        for row in common_styles[style_sig]
+                        if len(row) == 0 or row[0].strip() not in additional_cvr_numbers
+                    ]
+                    if len(remaining_rows) < min_ballots:
+                        del common_styles[style_sig]
+                    else:
+                        common_styles[style_sig] = remaining_rows
+
+        # Step 4: Aggregate all rare ballots into one row
+        # Create a single row group
+        row_groups = [all_rare_ballots]
+
+        # Step 5: Check for unanimous/near-unanimous patterns and add contrasting votes
+        # First, create a temporary aggregated row to analyze
+        temp_aggregated = aggregate_votes(all_rare_ballots, headerlen, aggregate_id="TEMP")
+        contest_totals = tally_aggregated_votes_by_contest(
+            temp_aggregated, contests, choices, headerlen
+        )
+        total_ballots_in_agg = len(all_rare_ballots)
+        problematic_contests = check_unanimous_patterns(contest_totals, total_ballots_in_agg)
+
+        # Track which contests needed balancing
+        if problematic_contests:
+            stats["contests_needing_balancing"] = [
+                (contest_name, winning_choice) for contest_name, winning_choice, _, _ in problematic_contests
+            ]
+
+        # If we have problematic contests, add contrasting votes
+        if problematic_contests:
+            contrasting_ballots = find_contrasting_ballots_multi(
+                problematic_contests,
+                common_styles,
+                contests,
+                choices,
+                headerlen,
+                min_ballots,
+            )
+            if contrasting_ballots:
+                all_rare_ballots.extend(contrasting_ballots)
+                stats["ballots_added_for_balancing"] = len(contrasting_ballots)
+                # Update common_styles to remove borrowed ballots
+                contrasting_cvr_numbers = set()
+                for row in contrasting_ballots:
+                    if len(row) > 0:
+                        cvr_num = row[0].strip()
+                        if cvr_num:
+                            contrasting_cvr_numbers.add(cvr_num)
+
+                for style_sig in list(common_styles.keys()):
+                    remaining_rows = [
+                        row
+                        for row in common_styles[style_sig]
+                        if len(row) == 0 or row[0].strip() not in contrasting_cvr_numbers
+                    ]
+                    if len(remaining_rows) < min_ballots:
+                        del common_styles[style_sig]
+                    else:
+                        common_styles[style_sig] = remaining_rows
+
+                # Update row_groups with the new ballots
+                row_groups[0] = all_rare_ballots
 
     # Create aggregated rows from the row groups
     aggregated_groups = []
@@ -726,35 +1101,37 @@ def anonymize_cvr(
         aggregated_row[stylecol] = agg_id
         aggregated_groups.append(aggregated_row)
 
+        # Calculate final totals for this aggregate
+        if headerlen < len(contests):
+            stats["final_aggregate_totals"] = tally_aggregated_votes_by_contest(
+                aggregated_row, contests, choices, headerlen
+            )
+
     stats["aggregated_rows"] = len(aggregated_groups)
     stats["final_styles"] = len(common_styles) + len(aggregated_groups)
 
-    # Build sets for tracking which rows to exclude (rare rows and borrowed common rows)
-    rare_row_set = set()
-    for rows in rare_styles.values():
-        for row in rows:
-            rare_row_set.add(tuple(row))
-
-    # Also track rows that were borrowed from common styles for aggregation
-    # We need to find which common style rows were used in aggregates
-    borrowed_row_set = set()
+    # Build set of all CvrNumbers that are in aggregates (should be excluded from output)
+    # Use CvrNumber (column 0) as the unique identifier for matching rows
+    aggregated_cvr_numbers = set()
     if row_groups:
-        # Create a set of all rows that will be in aggregates
+        # Create a set of all CvrNumbers that will be in aggregates
         for group in row_groups:
             for row in group:
-                row_tuple = tuple(row)
-                # If it's not a rare row, it must be a borrowed common row
-                if row_tuple not in rare_row_set:
-                    borrowed_row_set.add(row_tuple)
+                if len(row) > 0:
+                    cvr_num = row[0].strip()
+                    if cvr_num and not cvr_num.startswith("AGGREGATED-"):
+                        aggregated_cvr_numbers.add(cvr_num)
 
     # Collect all output rows
     output_rows = []
 
-    # Add common style rows (skip rare rows and borrowed rows)
+    # Add rows that are NOT in any aggregation
     for row in all_rows:
-        row_tuple = tuple(row)
-        if row_tuple not in rare_row_set and row_tuple not in borrowed_row_set:
-            output_rows.append(row)
+        if len(row) > 0:
+            cvr_num = row[0].strip()
+            # Skip if this row is in an aggregation
+            if cvr_num not in aggregated_cvr_numbers:
+                output_rows.append(row)
 
     # Add aggregated rows
     output_rows.extend(aggregated_groups)
@@ -794,7 +1171,29 @@ def anonymize_cvr(
         for row in output_rows:
             writer.writerow(row)
 
-        return stats
+    # Verify that tallies match (required check before delivering redacted CVR)
+    match, details = verify_tally_match(input_file, output_file, headerlen)
+    if not match:
+        print(
+            "ERROR: Vote tallies do not match between original and anonymized CVR!",
+            file=sys.stderr,
+        )
+        print("Mismatches:", file=sys.stderr)
+        for mismatch in details["mismatches"]:
+            print(
+                f"  Contest '{mismatch['contest']}', Choice '{mismatch['choice']}': "
+                f"Original={mismatch['original']}, Anonymized={mismatch['anonymized']}, "
+                f"Difference={mismatch['difference']}",
+                file=sys.stderr,
+            )
+        raise ValueError(
+            "Anonymization failed: vote tallies do not match. "
+            "This indicates a bug in the aggregation logic. "
+            "The redacted CVR cannot be delivered."
+        )
+    # Verification passed - tallies match
+
+    return stats
 
 
 def main():
@@ -848,6 +1247,54 @@ Examples:
         print(f"  Aggregated rows created: {stats['aggregated_rows']}")
         print(f"  Final styles: {stats['final_styles']}")
         print(f"  Output written to: {args.output_file}")
+
+        # Print aggregation statistics
+        if stats.get("rare_ballots_initial", 0) > 0:
+            print("\n=== Aggregation Statistics ===")
+            print(f"  Initial rare ballots: {stats['rare_ballots_initial']}")
+            
+            if stats.get("ballots_borrowed_for_minimum", 0) > 0:
+                print(f"  Ballots borrowed to reach minimum: {stats['ballots_borrowed_for_minimum']}")
+            
+            if stats.get("contests_needing_ballots"):
+                print(f"  Contests needing additional ballots ({len(stats['contests_needing_ballots'])}):")
+                for contest, needed in sorted(stats["contests_needing_ballots"].items()):
+                    print(f"    {contest[:60]}: needed {needed} more ballot(s)")
+                print(f"  Total ballots added for contests: {stats.get('ballots_added_for_contests', 0)}")
+            
+            if stats.get("contests_needing_balancing"):
+                print(f"  Contests needing balancing ({len(stats['contests_needing_balancing'])}):")
+                for contest, choice in stats["contests_needing_balancing"]:
+                    print(f"    {contest[:60]}: {choice[:40]}")
+                print(f"  Total ballots added for balancing: {stats.get('ballots_added_for_balancing', 0)}")
+            
+            total_extra = (
+                stats.get("ballots_borrowed_for_minimum", 0)
+                + stats.get("ballots_added_for_contests", 0)
+                + stats.get("ballots_added_for_balancing", 0)
+            )
+            if total_extra > 0:
+                print(f"  Total extra CVRs added to aggregate: {total_extra}")
+            
+            if stats.get("totals_after_rare_styles"):
+                print("\n  Totals after including all rare styles:")
+                for contest_name, choice_totals in sorted(stats["totals_after_rare_styles"].items()):
+                    total_votes = sum(choice_totals.values())
+                    if total_votes > 0:
+                        print(f"    {contest_name[:60]}: {total_votes} total vote(s)")
+                        for choice, count in sorted(choice_totals.items()):
+                            if count > 0:
+                                print(f"      {choice[:40]}: {count}")
+            
+            if stats.get("final_aggregate_totals"):
+                print("\n  Final aggregate totals:")
+                for contest_name, choice_totals in sorted(stats["final_aggregate_totals"].items()):
+                    total_votes = sum(choice_totals.values())
+                    if total_votes > 0:
+                        print(f"    {contest_name[:60]}: {total_votes} total vote(s)")
+                        for choice, count in sorted(choice_totals.items()):
+                            if count > 0:
+                                print(f"      {choice[:40]}: {count}")
 
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
