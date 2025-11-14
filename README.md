@@ -42,6 +42,8 @@ python3 anonymize_cvr.py input.csv output.csv --summarize
 - Combines all rare styles (< 10 ballots) into a single aggregation
 - Ensures at least 10 ballots per contest in the aggregation
 - Adds contrasting votes to prevent unanimous/near-unanimous patterns
+- **Anonymizes identifying fields**: CountingGroup and PrecinctPortion are blanked in all output rows to prevent revealing geographic or voting method information beyond the contest bitmap
+- **Preserves BallotType**: BallotType is preserved in non-aggregated rows (set to "AGGREGATED" in aggregated rows). The tool warns if BallotType varies for ballots with the same contest pattern, which could indicate information leakage
 - Computes descriptive style names based on contest patterns
 - Detects information leakage when different CVR style names map to the same contest pattern
 - Automatic tally verification ensures vote totals match between original and anonymized CVR
@@ -124,7 +126,8 @@ The anonymization tool uses a balance-focused approach:
    - At least 10 ballots total in the aggregation
    - At least 10 ballots per contest in the aggregation
 3. **Balance votes**: The tool checks for unanimous or near-unanimous patterns (all but 2 votes for the same candidate) and adds contrasting votes from common styles to break these patterns
-4. **Verify tallies**: Before delivering the redacted CVR, vote tallies are automatically verified to match the original
+4. **Anonymize identifying fields**: CountingGroup and PrecinctPortion are blanked in all output rows to prevent revealing geographic or voting method information. BallotType is preserved in non-aggregated rows (it should only reflect contest pattern, not additional identifying information). Note that if this sort of information is visible on the printed ballot, that should be taken into account when procedures for releasing ballot images are designed.
+5. **Verify tallies**: Before delivering the redacted CVR, vote tallies are automatically verified to match the original
 
 This approach minimizes the number of ballots that need to be redacted while ensuring both anonymity and statistical balance.
 

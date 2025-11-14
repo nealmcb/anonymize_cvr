@@ -18,21 +18,12 @@ Automatically anonymize a CVR (Cast Vote Record) file to meet the Colorado requi
 
 ### 2. Aggregation Strategy
 - Rare styles (those with < 10 ballots) must be aggregated to meet the threshold
-- **Aggregation can combine:**
-  - Multiple rare styles together
-  - Rare styles with common (non-rare) styles
-- When combining with common styles, prefer popular/common styles that share similar contests
-- Strategy: Use similarity-based grouping to preserve statistical properties and maintain auditability
-  - Aggregating similar styles preserves vote pattern structure better than mixing dissimilar styles
-  - This makes aggregated rows more meaningful and useful for audit purposes
-  - We aggregate as few ballots as possible (minimum 10) while still ensuring anonymity
-
-### 3. Style Similarity
-- Styles are considered similar based on contest overlap (Jaccard similarity)
-- A style signature includes:
-  - First 3 characters of the PrecinctPortion (ballot style identifier)
-  - Binary pattern indicating which contests appear on the ballot
-- When aggregating, prefer combining styles that share more contests
+- **All rare styles are combined into a single aggregation**
+- Strategy: Balance-focused approach that:
+  - Combines all rare ballots into one aggregation
+  - Ensures at least 10 ballots per contest in the aggregation
+  - Adds contrasting votes to prevent unanimous/near-unanimous patterns
+  - Minimizes the number of ballots that need to be redacted while ensuring anonymity and statistical balance
 
 ### 4. Contest Diversity (Best Practice)
 - Ideally, each contest should appear on at least 10 ballots in each aggregated row
@@ -54,18 +45,21 @@ Optionally summarize the cvr:
 
 ### Style Signature
 A style signature is created from:
-- First 3 characters of the PrecinctPortion field
 - For each vote column: "1" if the contest appears on the ballot (column is non-empty), "0" if empty
+
+Note: PrecinctPortion is not used in style identification. Styles are identified purely by the contest bitmap (which contests appear on the ballot). PrecinctPortion is blanked in the output to prevent revealing geographic information.
 
 ### Aggregation Algorithm
 1. Identify rare styles (those with < 10 ballots)
-2. If total ballots < 10 and cannot be combined with common styles, fail with error
-3. For rare styles:
-   - Prefer combining similar rare styles together
-   - If needed, combine rare styles with similar common styles
-   - Prefer popular/common styles for combination
-   - Ensure each aggregate group has >= 10 ballots
-4. Create aggregated rows by summing vote counts and anonymizing identifying fields
+2. Collect all rare ballots into a single aggregation
+3. If needed, borrow ballots from common styles to ensure:
+   - At least 10 ballots total in the aggregation
+   - At least 10 ballots per contest in the aggregation
+4. Check for unanimous/near-unanimous patterns (all but 2 votes for the same candidate)
+5. Add contrasting votes from common styles to break unanimous patterns
+6. Create aggregated rows by summing vote counts and anonymizing identifying fields
+7. Blank CountingGroup and PrecinctPortion in all output rows
+8. Preserve BallotType in non-aggregated rows (set to "AGGREGATED" in aggregated rows), with warning if it varies for same contest pattern
 
 ### Output Format
 - Headers preserved at top (version, contests, choices, headers)
@@ -74,28 +68,38 @@ A style signature is created from:
 - Line terminators preserved from input file (LF, CRLF, or CR)
 
 ### Identifying Fields Anonymized
+
+**For aggregated rows:**
 - CvrNumber: Set to "AGGREGATED-N" where N is the aggregate number
-- CountingGroup: Set to "AGGREGATED"
-- PrecinctPortion: Set to "AGGREGATED-N"
-- Other identifying fields (TabulatorNum, BatchId, RecordId, ImprintedId) are anonymized
+- TabulatorNum: Blanked (set to empty string)
+- BatchId: Blanked (set to empty string)
+- RecordId: Blanked (set to empty string)
+- ImprintedId: Blanked (set to empty string)
+- CountingGroup: Blanked (set to empty string)
+- PrecinctPortion: Blanked (set to empty string)
+- BallotType: Set to "AGGREGATED" to clearly indicate this is an aggregated row
+
+**For non-aggregated rows:**
+- CountingGroup: Blanked (set to empty string) to avoid revealing voting method information
+- PrecinctPortion: Blanked (set to empty string) to avoid revealing geographic/precinct information
+- BallotType: Preserved (kept as-is) - should only reflect contest pattern, not additional identifying information
+
+**Rationale:**
+- **PrecinctPortion**: Typically identifies geographic location/precinct, which could help identify voters. It is not used in style identification (styles are identified purely by contest bitmap) and is blanked in all output rows.
+- **CountingGroup**: May indicate voting method (mail, in-person, etc.), which could add identifying information. It is blanked in all output rows.
+- **BallotType**: Should only reflect the contest pattern (which contests appear on the ballot). It is preserved in non-aggregated rows. The tool warns if BallotType varies for ballots with the same contest pattern, which could indicate information leakage. If BallotType adds information beyond the contest bitmap, it should be blanked or handled differently.
 
 ## Edge Cases and Limitations
 
 ### Single Contest Issues
 If a single contest has fewer than 10 votes across all ballots, row-level aggregation cannot solve this. This would require a different approach (e.g., contest-level redaction).
 
-### Similarity Measurement
-The current similarity metric (Jaccard similarity of contest presence) is a heuristic. More sophisticated metrics could consider:
-- Precinct overlap
-- Geographic proximity
-- Contest importance/weight
 
 ## Nebulous Goals and Future Considerations
 
 These are aspirational goals that inform the design but are not strictly required:
 
 ### 1. Optimal Style Combination
-- When aggregating rare styles, prefer combining similar styles to minimize information loss
 - When borrowing from common styles, prefer popular/common styles (those with many ballots)
 - The rationale: popular styles provide more "cover" and are less likely to reveal individual voting patterns
 
@@ -107,7 +111,7 @@ These are aspirational goals that inform the design but are not strictly require
 
 ### 3. Information Preservation
 - When possible, aggregate in ways that preserve as much information as possible about vote patterns
-- Combining similar styles (that share contests) helps preserve the structure of the vote data
+- The balance-focused approach (ensuring minimum ballots per contest and preventing unanimous patterns) helps preserve the structure of the vote data
 - This makes aggregated rows more useful for study
 
 ### 4. Entropy Considerations

@@ -23,33 +23,25 @@ from cvr_utils import TempCVRFile, is_parquet_file
 
 def pull_style_signature(row: List[str], headerlen: int = 8, stylecol: int = 6) -> str:
     """
-    Convert a CVR row into a style signature string.
+    Convert a CVR row into a style signature string based solely on contest pattern.
 
-    The signature includes:
-    - First 3 characters of the ballot style (PrecinctPortion)
+    The signature includes only the contest bitmap:
     - For each vote column: "1" if vote was allowed (non-empty), "0" if empty (contest not on ballot)
 
-    This matches the approach in the anonymize_cvr.ipynb notebook.
+    PrecinctPortion is not used in the signature to avoid relying on geographic information.
+    Styles are identified purely by which contests appear on the ballot.
 
     Args:
         row: List of strings representing a CVR row
         headerlen: Number of header columns before vote data starts (default 8)
-        stylecol: Index of the style column (default 6 for PrecinctPortion)
+        stylecol: Index of the style column (unused, kept for compatibility)
 
     Returns:
-        Style signature string
+        Style signature string (contest bitmap only)
     """
-    if len(row) <= stylecol:
-        style_str = ""
-    else:
-        style_val = row[stylecol].strip()
-        # Extract first 3 characters (handles both "P1" and "105 (105-3)" formats)
-        # Take up to 3 characters, no padding
-        style_str = style_val[:3]
-
     # For each vote column, indicate if contest appeared on ballot (1) or not (0)
     vote_indicators = ["1" if vote.strip() != "" else "0" for vote in row[headerlen:]]
-    return style_str + "".join(vote_indicators)
+    return "".join(vote_indicators)
 
 
 def aggregate_votes(rows: List[List[str]], headerlen: int = 8, aggregate_id: str = "") -> List[str]:
@@ -78,13 +70,29 @@ def aggregate_votes(rows: List[List[str]], headerlen: int = 8, aggregate_id: str
     if aggregate_id:
         aggregated[0] = aggregate_id  # CvrNumber
     else:
-        aggregated[0] = f"AGG-{len(rows)}"  # Indicate this is an aggregate with count
+        aggregated[0] = f"AGG-{len(rows)}"  # Indicate this is an aggregate
+    
+    # Blank TabulatorNum, BatchId, RecordId, and ImprintedId to avoid revealing identifying information
+    if len(aggregated) > 1:
+        aggregated[1] = ""  # TabulatorNum
+    if len(aggregated) > 2:
+        aggregated[2] = ""  # BatchId
+    if len(aggregated) > 3:
+        aggregated[3] = ""  # RecordId
+    if len(aggregated) > 4:
+        aggregated[4] = ""  # ImprintedId
 
-    # CountingGroup (index 5) - set to indicate aggregated
+    # CountingGroup (index 5) - blank to avoid revealing additional information
     if len(aggregated) > 5:
-        aggregated[5] = "AGGREGATED"
+        aggregated[5] = ""
 
-    # PrecinctPortion/BallotType (indices 6-7) will be set by caller
+    # PrecinctPortion (index 6) - blank to avoid revealing geographic/precinct information
+    if len(aggregated) > 6:
+        aggregated[6] = ""
+
+    # BallotType (index 7) - set to "AGGREGATED" for aggregated rows
+    if len(aggregated) > 7:
+        aggregated[7] = "AGGREGATED"
 
     # Aggregate vote columns (sum numeric values)
     num_cols = max(len(row) for row in rows)
@@ -641,9 +649,10 @@ def analyze_styles(
         pattern_to_descriptive[pattern] = descriptive_name
         style_counter += 1
 
-    # Check for leakage: different CVR style names for same contest pattern
+    # Check for leakage: different CVR style names or BallotTypes for same contest pattern
     leakage_warnings = []
     pattern_to_cvr_styles: Dict[str, set] = defaultdict(set)
+    pattern_to_ballot_types: Dict[str, set] = defaultdict(set)
 
     for row in all_rows:
         if len(row) <= headerlen or len(row) <= stylecol:
@@ -652,6 +661,12 @@ def analyze_styles(
         contest_pattern = compute_contest_pattern(row, contests, headerlen)
         cvr_style = row[stylecol].strip()
         pattern_to_cvr_styles[contest_pattern].add(cvr_style)
+        
+        # Check BallotType (index 7) if present
+        if len(row) > 7:
+            ballot_type = row[7].strip()
+            if ballot_type:  # Only track non-empty BallotTypes
+                pattern_to_ballot_types[contest_pattern].add(ballot_type)
 
     for pattern, cvr_styles in pattern_to_cvr_styles.items():
         if len(cvr_styles) > 1:
@@ -660,6 +675,16 @@ def analyze_styles(
                 f"Leakage detected: Contest pattern '{pattern}' (descriptive style '{descriptive_name}') "
                 f"has {len(cvr_styles)} different CVR style names: {sorted(cvr_styles)}. "
                 f"This may reveal additional information about voters."
+            )
+    
+    # Check if BallotType varies for same contest pattern
+    for pattern, ballot_types in pattern_to_ballot_types.items():
+        if len(ballot_types) > 1:
+            descriptive_name = pattern_to_descriptive[pattern]
+            leakage_warnings.append(
+                f"Warning: Contest pattern '{pattern}' (descriptive style '{descriptive_name}') "
+                f"has {len(ballot_types)} different BallotType values: {sorted(ballot_types)}. "
+                f"BallotType is preserved in output - ensure it doesn't reveal identifying information."
             )
 
     # Build mapping from CVR style to descriptive style
@@ -1097,8 +1122,8 @@ def anonymize_cvr(
     for i, group in enumerate(row_groups):
         agg_id = f"AGGREGATED-{i + 1}"
         aggregated_row = aggregate_votes(group, headerlen, aggregate_id=agg_id)
-        # Mark as aggregated in style field (PrecinctPortion)
-        aggregated_row[stylecol] = agg_id
+        # Note: CountingGroup and PrecinctPortion are already blanked in aggregate_votes
+        # BallotType is set to "AGGREGATED" for aggregated rows
         aggregated_groups.append(aggregated_row)
 
         # Calculate final totals for this aggregate
@@ -1126,12 +1151,23 @@ def anonymize_cvr(
     output_rows = []
 
     # Add rows that are NOT in any aggregation
+    # Blank CountingGroup and PrecinctPortion to avoid revealing additional information
+    # Preserve BallotType (it should only reflect contest pattern, not additional identifying info)
     for row in all_rows:
         if len(row) > 0:
             cvr_num = row[0].strip()
             # Skip if this row is in an aggregation
             if cvr_num not in aggregated_cvr_numbers:
-                output_rows.append(row)
+                # Create a copy to avoid modifying the original
+                output_row = row.copy()
+                # Blank CountingGroup (index 5) and PrecinctPortion (index 6)
+                # Preserve BallotType (index 7) - it should only reflect contest pattern
+                if len(output_row) > 5:
+                    output_row[5] = ""  # CountingGroup
+                if len(output_row) > 6:
+                    output_row[6] = ""  # PrecinctPortion
+                # BallotType (index 7) is preserved as-is
+                output_rows.append(output_row)
 
     # Add aggregated rows
     output_rows.extend(aggregated_groups)
