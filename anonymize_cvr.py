@@ -18,7 +18,11 @@ import sys
 from collections import defaultdict
 from typing import List, Dict, Tuple, Any, Optional, Iterable, Set
 
+import typer
+
 from cvr_utils import TempCVRFile, is_parquet_file
+
+app = typer.Typer(help="Anonymize CVR files by aggregating rare styles (supports CSV and Parquet formats)")
 
 
 def pull_style_signature(row: List[str], headerlen: int = 8, stylecol: int = 6) -> str:
@@ -1629,55 +1633,40 @@ def anonymize_cvr(
     return stats
 
 
-def main():
-    """Command-line interface for CVR anonymization."""
-    import argparse
+@app.command()
+def main(
+    input_file: str = typer.Argument(..., help="Input CVR file path (CSV or Parquet format)"),
+    output_file: str = typer.Argument(..., help="Output anonymized CVR file path"),
+    min_ballots: int = typer.Option(10, "--min-ballots", help="Minimum ballots required per style"),
+    stylecol: int = typer.Option(6, "--stylecol", help="Index of style column"),
+    headerlen: int = typer.Option(8, "--headerlen", help="Number of header columns"),
+    summarize: bool = typer.Option(False, "--summarize", "-s", help="Print detailed summary of CVR statistics"),
+) -> None:
+    """Anonymize CVR files by aggregating rare styles.
 
-    parser = argparse.ArgumentParser(
-        description="Anonymize CVR files by aggregating rare styles (supports CSV and Parquet formats)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python anonymize_cvr.py input.csv output.csv
-  python anonymize_cvr.py input.parquet output.csv
-  python anonymize_cvr.py input.csv output.csv --min-ballots 15
-        """,
-    )
-    parser.add_argument("input_file", help="Input CVR file path (CSV or Parquet format)")
-    parser.add_argument("output_file", help="Output anonymized CVR file path")
-    parser.add_argument(
-        "--min-ballots",
-        type=int,
-        default=10,
-        help="Minimum ballots required per style (default: 10)",
-    )
-    parser.add_argument(
-        "--stylecol", type=int, default=6, help="Index of style column (default: 6)"
-    )
-    parser.add_argument(
-        "--headerlen", type=int, default=8, help="Number of header columns (default: 8)"
-    )
-    parser.add_argument(
-        "--summarize", "-s", action="store_true", help="Print detailed summary of CVR statistics"
-    )
+    Examples:
 
-    args = parser.parse_args()
+        anonymize-cvr input.csv output.csv
 
+        anonymize-cvr input.parquet output.csv
+
+        anonymize-cvr input.csv output.csv --min-ballots 15
+    """
     try:
         stats = anonymize_cvr(
-            args.input_file,
-            args.output_file,
-            args.min_ballots,
-            args.stylecol,
-            args.headerlen,
-            args.summarize,
+            input_file,
+            output_file,
+            min_ballots,
+            stylecol,
+            headerlen,
+            summarize,
         )
 
-        print("Anonymization complete!")
-        print(f"  Total rows processed: {stats['total_rows']}")
-        print(f"  Original styles: {stats['original_styles']}")
+        typer.echo("Anonymization complete!")
+        typer.echo(f"  Total rows processed: {stats['total_rows']}")
+        typer.echo(f"  Original styles: {stats['original_styles']}")
         if stats.get("rare_style_counts"):
-            print(f"  Rare styles ({len(stats['rare_style_counts'])}):")
+            typer.echo(f"  Rare styles ({len(stats['rare_style_counts'])}):")
             for entry in sorted(stats["rare_style_counts"], key=lambda x: x["descriptive_name"]):
                 orig_styles = entry.get("original_styles") or []
                 if orig_styles:
@@ -1693,39 +1682,39 @@ Examples:
                         all_ballot_types.update(types)
                     if all_ballot_types:
                         ballot_type_str = f", BallotType={','.join(sorted(all_ballot_types))}"
-                print(
+                typer.echo(
                     f"    {entry['descriptive_name']}: {entry['ballot_count']} ballot(s) from {orig_desc}{ballot_type_str}"
                 )
-        print(f"  Aggregated rows created: {stats['aggregated_rows']}")
-        print(f"  Final styles: {stats['final_styles']}")
-        print(f"  Output written to: {args.output_file}")
+        typer.echo(f"  Aggregated rows created: {stats['aggregated_rows']}")
+        typer.echo(f"  Final styles: {stats['final_styles']}")
+        typer.echo(f"  Output written to: {output_file}")
 
         # Print aggregation statistics
         if stats.get("rare_ballots_initial", 0) > 0:
-            print("\n=== Aggregation Statistics ===")
-            print(f"  Initial rare ballots: {stats['rare_ballots_initial']}")
+            typer.echo("\n=== Aggregation Statistics ===")
+            typer.echo(f"  Initial rare ballots: {stats['rare_ballots_initial']}")
             
             if stats.get("ballots_borrowed_for_minimum", 0) > 0:
-                print(f"  Ballots borrowed to reach minimum: {stats['ballots_borrowed_for_minimum']}")
+                typer.echo(f"  Ballots borrowed to reach minimum: {stats['ballots_borrowed_for_minimum']}")
             
             if stats.get("contests_needing_ballots"):
-                print(
+                typer.echo(
                     f"  Contests needing additional ballots ({len(stats['contests_needing_ballots'])}):"
                 )
                 contest_counts = stats.get("contest_ballot_counts", {})
                 min_required = stats.get("min_ballots", 10)
                 for contest, needed in sorted(stats["contests_needing_ballots"].items()):
                     current = contest_counts.get(contest, 0)
-                    print(
+                    typer.echo(
                         f"    {contest[:60]}: had {current}, needed {needed} more to reach {min_required}"
                     )
-                print(f"  Total ballots added for contests: {stats.get('ballots_added_for_contests', 0)}")
+                typer.echo(f"  Total ballots added for contests: {stats.get('ballots_added_for_contests', 0)}")
             
             if stats.get("contests_needing_balancing"):
-                print(f"  Contests needing balancing ({len(stats['contests_needing_balancing'])}):")
+                typer.echo(f"  Contests needing balancing ({len(stats['contests_needing_balancing'])}):")
                 for contest, choice in stats["contests_needing_balancing"]:
-                    print(f"    {contest[:60]}: {choice[:40]}")
-                print(f"  Total ballots added for balancing: {stats.get('ballots_added_for_balancing', 0)}")
+                    typer.echo(f"    {contest[:60]}: {choice[:40]}")
+                typer.echo(f"  Total ballots added for balancing: {stats.get('ballots_added_for_balancing', 0)}")
             
             total_extra = (
                 stats.get("ballots_borrowed_for_minimum", 0)
@@ -1733,10 +1722,10 @@ Examples:
                 + stats.get("ballots_added_for_balancing", 0)
             )
             if total_extra > 0:
-                print(f"  Total extra CVRs added to aggregate: {total_extra}")
+                typer.echo(f"  Total extra CVRs added to aggregate: {total_extra}")
             
             if stats.get("totals_after_rare_styles"):
-                print("\n  Totals after including all rare styles:")
+                typer.echo("\n  Totals after including all rare styles:")
                 eligible_counts_after_rare = stats.get("contest_ballot_counts_after_rare", {})
                 ballots_with_votes_after_rare = stats.get(
                     "contest_ballot_vote_counts_after_rare", {}
@@ -1745,34 +1734,34 @@ Examples:
                     votes_cast = ballots_with_votes_after_rare.get(contest_name, 0)
                     eligible = eligible_counts_after_rare.get(contest_name, votes_cast)
                     undervotes = max(eligible - votes_cast, 0)
-                    print(
+                    typer.echo(
                         f"    {contest_name[:60]}: {eligible} ballot(s) with contest, "
                         f"{votes_cast} ballot(s) with votes, {undervotes} undervote(s)"
                     )
                     for choice, count in sorted(choice_totals.items()):
                         if count > 0:
-                            print(f"      {choice[:40]}: {count}")
+                            typer.echo(f"      {choice[:40]}: {count}")
             
             if stats.get("final_aggregate_totals"):
-                print("\n  Final aggregate totals:")
+                typer.echo("\n  Final aggregate totals:")
                 final_contest_counts = stats.get("final_contest_ballot_counts", {})
                 final_contest_vote_counts = stats.get("final_contest_vote_counts", {})
                 for contest_name, choice_totals in sorted(stats["final_aggregate_totals"].items()):
                     votes_cast = final_contest_vote_counts.get(contest_name, 0)
                     eligible = final_contest_counts.get(contest_name, votes_cast)
                     undervotes = max(eligible - votes_cast, 0)
-                    print(
+                    typer.echo(
                         f"    {contest_name[:60]}: {eligible} ballot(s) with contest, "
                         f"{votes_cast} ballot(s) with votes, {undervotes} undervote(s)"
                     )
                     for choice, count in sorted(choice_totals.items()):
                         if count > 0:
-                            print(f"      {choice[:40]}: {count}")
+                            typer.echo(f"      {choice[:40]}: {count}")
 
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
-    main()
+    app()
