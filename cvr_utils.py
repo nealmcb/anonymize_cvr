@@ -7,9 +7,8 @@ and conversion to the expected CSV format.
 """
 
 import csv
-import tempfile
 import os
-from typing import Dict, List, Optional
+import tempfile
 
 try:
     import pandas as pd
@@ -72,7 +71,7 @@ def convert_parquet_to_csv_format(parquet_file: str, csv_output: str) -> None:
     contests = sorted(votes_df["contest"].unique())
 
     # Build a mapping of contest -> candidates
-    contest_candidates: Dict[str, List[str]] = {}
+    contest_candidates: dict[str, list[str]] = {}
     for contest in contests:
         candidates = sorted(votes_df[votes_df["contest"] == contest]["candidate"].unique())
         contest_candidates[contest] = candidates
@@ -173,8 +172,8 @@ class TempCVRFile:
             input_path: Path to input CVR file (CSV or Parquet)
         """
         self.input_path = input_path
-        self.temp_file: Optional[tempfile._TemporaryFileWrapper[str]] = None
-        self.temp_path: Optional[str] = None
+        self.temp_file: tempfile._TemporaryFileWrapper[str] | None = None
+        self.temp_path: str | None = None
         self.is_parquet = is_parquet_file(input_path)
 
     def __enter__(self) -> str:
@@ -199,9 +198,9 @@ class TempCVRFile:
 
     def __exit__(
         self,
-        exc_type: Optional[type],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[object],
+        exc_type: type | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
     ) -> bool:
         """
         Exit the context, cleaning up temporary file if created.
