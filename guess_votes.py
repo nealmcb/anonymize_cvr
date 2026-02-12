@@ -15,11 +15,16 @@ When CVR is published, probabilities can be refined based on:
 """
 
 import csv
-import argparse
 import os
 from collections import defaultdict
 
+import typer
+
 from cvr_utils import TempCVRFile
+
+app = typer.Typer(
+    help="Generate test case for ballot anonymization testing (supports CSV and Parquet formats)"
+)
 
 
 # Test case configuration
@@ -153,7 +158,7 @@ def read_cvr_file(cvr_file, headerlen=8, stylecol=6):
     ballots_by_style = defaultdict(list)
 
     with TempCVRFile(cvr_file) as csv_file:
-        with open(csv_file, "r", encoding="utf-8") as f:
+        with open(csv_file, encoding="utf-8") as f:
             reader = csv.reader(f)
             # Skip headers
             next(reader)  # version
@@ -448,55 +453,68 @@ def write_probability_spreadsheet(
 def create_probability_spreadsheets(
     ballots, original_cvr_file=None, anonymized_cvr_file=None, min_ballots=10
 ):
-    """Create probability spreadsheets: one with overall results, one refined by original CVR, one by anonymized CVR.
+    """Create probability spreadsheets: one with overall results, one refined
+    by original CVR, one by anonymized CVR.
 
     Generates:
     - test_case_results_probabilities.csv: Using overall election results only
-    - test_case_original_probabilities.csv: Using original CVR file to refine probabilities
-    - test_case_anonymized_probabilities.csv: Using anonymized CVR file to refine probabilities
+    - test_case_original_probabilities.csv: Using original CVR file to refine
+      probabilities
+    - test_case_anonymized_probabilities.csv: Using anonymized CVR file to
+      refine probabilities
     """
 
     # Calculate overall election probabilities
     overall_probs = calculate_overall_probabilities(ballots)
 
-    print("Overall election results:")
-    print(
-        f"  Contest A: A0={overall_probs['votes_a0']}/{overall_probs['eligible_a']} ({overall_probs['prob_a0']:.4f}), A1={overall_probs['votes_a1']}/{overall_probs['eligible_a']} ({overall_probs['prob_a1']:.4f}), Undervote={overall_probs['undervote_a']:.4f}"
+    typer.echo("Overall election results:")
+    typer.echo(
+        f"  Contest A: A0={overall_probs['votes_a0']}/{overall_probs['eligible_a']} "
+        f"({overall_probs['prob_a0']:.4f}), "
+        f"A1={overall_probs['votes_a1']}/{overall_probs['eligible_a']} "
+        f"({overall_probs['prob_a1']:.4f}), "
+        f"Undervote={overall_probs['undervote_a']:.4f}"
     )
-    print(
-        f"  Contest B: B0={overall_probs['votes_b0']}/{overall_probs['eligible_b']} ({overall_probs['prob_b0']:.4f}), B1={overall_probs['votes_b1']}/{overall_probs['eligible_b']} ({overall_probs['prob_b1']:.4f}), Undervote={overall_probs['undervote_b']:.4f}"
+    typer.echo(
+        f"  Contest B: B0={overall_probs['votes_b0']}/{overall_probs['eligible_b']} "
+        f"({overall_probs['prob_b0']:.4f}), "
+        f"B1={overall_probs['votes_b1']}/{overall_probs['eligible_b']} "
+        f"({overall_probs['prob_b1']:.4f}), "
+        f"Undervote={overall_probs['undervote_b']:.4f}"
     )
 
     # Write overall results spreadsheet (no CVR refinement)
     write_probability_spreadsheet(
         ballots, "test_case_results_probabilities.csv", overall_probs, style_probs=None
     )
-    print("\nCreated test_case_results_probabilities.csv (using overall election results)")
+    typer.echo("\nCreated test_case_results_probabilities.csv (using overall election results)")
 
     # If original CVR file is provided, read it and calculate style-level probabilities
     if original_cvr_file and os.path.exists(original_cvr_file):
         ballots_by_style = read_cvr_file(original_cvr_file)
         style_probs = calculate_style_probabilities(ballots_by_style, min_ballots)
-        print("\nUsing original CVR file to refine probabilities:")
-        print(f"  Found {len(style_probs)} styles")
+        typer.echo("\nUsing original CVR file to refine probabilities:")
+        typer.echo(f"  Found {len(style_probs)} styles")
         for style, probs in style_probs.items():
             status = (
                 "common"
                 if probs["is_common"]
                 else ("aggregated" if probs["is_aggregated"] else "rare")
             )
-            print(f"    {style}: {probs['ballot_count']} ballots ({status})")
+            typer.echo(f"    {style}: {probs['ballot_count']} ballots ({status})")
 
         # Write original probabilities spreadsheet
         write_probability_spreadsheet(
             ballots, "test_case_original_probabilities.csv", overall_probs, style_probs=style_probs
         )
-        print(
-            "Created test_case_original_probabilities.csv (using original CVR-refined probabilities)"
+        typer.echo(
+            "Created test_case_original_probabilities.csv "
+            "(using original CVR-refined probabilities)"
         )
     else:
-        print(
-            "\nNo original CVR file provided - creating test_case_original_probabilities.csv with overall results"
+        typer.echo(
+            "\nNo original CVR file provided - creating "
+            "test_case_original_probabilities.csv with overall results"
         )
         write_probability_spreadsheet(
             ballots, "test_case_original_probabilities.csv", overall_probs, style_probs=None
@@ -508,15 +526,15 @@ def create_probability_spreadsheets(
         anonymized_style_probs = calculate_style_probabilities(
             anonymized_ballots_by_style, min_ballots
         )
-        print("\nUsing anonymized CVR file to refine probabilities:")
-        print(f"  Found {len(anonymized_style_probs)} styles")
+        typer.echo("\nUsing anonymized CVR file to refine probabilities:")
+        typer.echo(f"  Found {len(anonymized_style_probs)} styles")
         for style, probs in anonymized_style_probs.items():
             status = (
                 "common"
                 if probs["is_common"]
                 else ("aggregated" if probs["is_aggregated"] else "rare")
             )
-            print(f"    {style}: {probs['ballot_count']} ballots ({status})")
+            typer.echo(f"    {style}: {probs['ballot_count']} ballots ({status})")
 
         # Build mapping from original styles to anonymized styles
         # For styles that were aggregated, we need to map them to the aggregated style
@@ -552,64 +570,62 @@ def create_probability_spreadsheets(
             style_probs=anonymized_style_probs,
             style_mapping=style_mapping,
         )
-        print(
-            "Created test_case_anonymized_probabilities.csv (using anonymized CVR-refined probabilities)"
+        typer.echo(
+            "Created test_case_anonymized_probabilities.csv "
+            "(using anonymized CVR-refined probabilities)"
         )
     else:
-        print(
-            "\nNo anonymized CVR file provided - creating test_case_anonymized_probabilities.csv with overall results"
+        typer.echo(
+            "\nNo anonymized CVR file provided - creating "
+            "test_case_anonymized_probabilities.csv with overall results"
         )
         write_probability_spreadsheet(
             ballots, "test_case_anonymized_probabilities.csv", overall_probs, style_probs=None
         )
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Generate test case for ballot anonymization testing (supports CSV and Parquet formats)"
-    )
-    parser.add_argument(
-        "original_cvr_file",
-        nargs="?",
-        default=None,
-        help="Path to original CVR file (CSV or Parquet format) (default: generate test case and use it)",
-    )
-    parser.add_argument(
+@app.command()
+def main(
+    original_cvr_file: str | None = typer.Argument(
+        None,
+        help=(
+            "Path to original CVR file (CSV or Parquet format) "
+            "(default: generate test case and use it)"
+        ),
+    ),
+    anonymized_cvr: str | None = typer.Option(
+        None,
         "--anonymized-cvr",
         "-a",
-        default=None,
         help="Path to anonymized CVR file (CSV or Parquet format) to compare probabilities",
-    )
-    parser.add_argument(
-        "--election-name",
-        "-n",
-        default="Test Election 2024",
-        help="Name of the election (default: 'Test Election 2024')",
-    )
-    parser.add_argument(
-        "--min-ballots",
-        "-m",
-        type=int,
-        default=10,
-        help="Minimum ballots per style to be considered common (default: 10)",
-    )
-    args = parser.parse_args()
-
+    ),
+    election_name: str = typer.Option(
+        "Test Election 2024", "--election-name", "-n", help="Name of the election"
+    ),
+    min_ballots: int = typer.Option(
+        10, "--min-ballots", "-m", help="Minimum ballots per style to be considered common"
+    ),
+) -> None:
+    """Generate test case for ballot anonymization testing."""
     # If original CVR file not provided, generate test case
-    if args.original_cvr_file is None:
-        ballots = create_cvr_file(args.election_name)
-        print(f"Created CVR file with {len(ballots)} ballots")
-        original_cvr_file = "test_case_cvr.csv"
+    if original_cvr_file is None:
+        ballots = create_cvr_file(election_name)
+        typer.echo(f"Created CVR file with {len(ballots)} ballots")
+        original_cvr = "test_case_cvr.csv"
     else:
         # Read ballots from existing original CVR file
-        original_cvr_file = args.original_cvr_file
-        ballots = read_ballots_from_cvr(original_cvr_file)
-        print(f"Read original CVR file with {len(ballots)} ballots")
+        original_cvr = original_cvr_file
+        ballots = read_ballots_from_cvr(original_cvr)
+        typer.echo(f"Read original CVR file with {len(ballots)} ballots")
 
     create_probability_spreadsheets(
         ballots,
-        original_cvr_file=original_cvr_file,
-        anonymized_cvr_file=args.anonymized_cvr,
-        min_ballots=args.min_ballots,
+        original_cvr_file=original_cvr,
+        anonymized_cvr_file=anonymized_cvr,
+        min_ballots=min_ballots,
     )
-    print("\nCreated all probability spreadsheets")
+    typer.echo("\nCreated all probability spreadsheets")
+
+
+if __name__ == "__main__":
+    app()

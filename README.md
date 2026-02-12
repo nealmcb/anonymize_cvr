@@ -144,6 +144,60 @@ The anonymization tool automatically:
 ## Requirements
 
 - Python 3.12+
-- Standard library only (csv, collections, typing) for CSV files
-- Optional: `pandas` and `pyarrow` for Parquet file support
-  - Install with: `pip install pandas pyarrow`
+- Dependencies managed via `uv` (Python package installer)
+- Core dependencies: `typer`, `pandas`, `pyarrow`
+- Development dependencies: `pytest`, `black`, `ruff`, `mypy`
+
+## Installation
+
+### Using uv (recommended)
+
+```bash
+# Install uv if not already installed
+pip install uv
+
+# Create virtual environment and install dependencies
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -e ".[dev]"
+```
+
+### Using pip
+
+```bash
+pip install -e ".[dev]"
+```
+
+## Development
+
+The project uses modern Python tooling:
+
+- **Typer**: CLI framework for both `anonymize_cvr.py` and `guess_votes.py`
+- **pytest**: Test framework
+- **black**: Code formatting (line length 100)
+- **ruff**: Fast Python linter
+- **mypy**: Type checking (basic mode)
+
+### Quality Checks
+
+Run all quality checks before committing:
+
+```bash
+make check
+```
+
+Individual checks:
+```bash
+make format      # Check code formatting
+make lint        # Run linter
+make test        # Run tests
+make typecheck   # Type check (informational only)
+```
+
+### Running Tests
+
+```bash
+pytest
+# or
+make test
+```
