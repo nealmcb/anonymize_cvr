@@ -261,20 +261,20 @@ def verify_tally_match(
     with TempCVRFile(original_file) as orig_csv:
         with open(orig_csv, encoding="utf-8") as f:
             reader = csv.reader(f)
-            _ = next(reader)  # Skip version
+            _version = next(reader)  # Version row (unused)
             orig_contests = next(reader)
             orig_choices = next(reader)
-            _ = next(reader)  # Skip headers
+            _headers = next(reader)  # Headers row (unused)
             orig_rows = list(reader)
 
     # Read anonymized CVR
     with TempCVRFile(anonymized_file) as anon_csv:
         with open(anon_csv, encoding="utf-8") as f:
             reader = csv.reader(f)
-            _ = next(reader)  # Skip version
+            _version = next(reader)  # Version row (unused)
             anon_contests = next(reader)
             anon_choices = next(reader)
-            _ = next(reader)  # Skip headers
+            _headers = next(reader)  # Headers row (unused)
             anon_rows = list(reader)
 
     # Tally votes

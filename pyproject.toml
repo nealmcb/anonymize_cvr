@@ -54,7 +54,12 @@ warn_redundant_casts = true
 warn_unused_ignores = false
 warn_no_return = true
 check_untyped_defs = true
-# Disable strict mode for now - the code has many type issues that would require extensive refactoring
+# Disable strict mode for now - the legacy codebase has many type issues:
+# - Missing return type annotations on many functions
+# - Untyped function parameters throughout
+# - Inconsistent use of Any vs proper types
+# - Complex dict/list structures without generic type parameters
+# Enabling strict mode would require extensive refactoring that could introduce bugs
 disallow_untyped_defs = false
 disallow_any_unimported = false
 no_implicit_optional = false

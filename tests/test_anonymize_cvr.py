@@ -10,12 +10,12 @@ def test_pull_style_signature_basic() -> None:
     row = ["1", "2", "3", "4", "5", "6", "7", "8", "Alice", "Bob", "", "", ""]
     signature = pull_style_signature(row, headerlen=8)
     assert signature == "11000"
-    
+
     # Row with all contests voted
     row_all = ["1", "2", "3", "4", "5", "6", "7", "8", "Alice", "Bob", "Carol", "Dave", "Eve"]
     signature_all = pull_style_signature(row_all, headerlen=8)
     assert signature_all == "11111"
-    
+
     # Row with no votes (all contests blank)
     row_none = ["1", "2", "3", "4", "5", "6", "7", "8", "", "", "", "", ""]
     signature_none = pull_style_signature(row_none, headerlen=8)
@@ -37,9 +37,9 @@ def test_aggregate_votes_basic() -> None:
         ["2", "2", "3", "4", "5", "6", "7", "8", "0", "1", "0"],
         ["3", "2", "3", "4", "5", "6", "7", "8", "1", "0", "1"],
     ]
-    
+
     aggregated = aggregate_votes(rows, headerlen=8, aggregate_id="AGG-1")
-    
+
     # Check header fields
     assert aggregated[0] == "AGG-1"  # CvrNumber
     assert aggregated[1] == ""  # TabulatorNum
@@ -64,9 +64,9 @@ def test_aggregate_votes_single_row() -> None:
     rows = [
         ["1", "2", "3", "4", "5", "6", "7", "8", "5", "3", "2"],
     ]
-    
+
     aggregated = aggregate_votes(rows, headerlen=8, aggregate_id="AGG-1")
-    
+
     assert aggregated[0] == "AGG-1"
     assert aggregated[8] == "5"
     assert aggregated[9] == "3"
