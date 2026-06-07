@@ -35,6 +35,7 @@ python3 anonymize_cvr.py input.csv output.csv
 python3 anonymize_cvr.py input.parquet output.csv
 python3 anonymize_cvr.py input.csv output.csv --min-ballots 15
 python3 anonymize_cvr.py input.csv output.csv --summarize
+python3 anonymize_cvr.py input.csv output.csv --debug-rare-styles
 ```
 
 **Features:**
@@ -54,6 +55,7 @@ python3 anonymize_cvr.py input.csv output.csv --summarize
   - Total extra CVRs added to aggregate
   - Final aggregate totals (with ballot counts, vote counts, and undervotes)
 - Style mapping output includes BallotType information for each CVR style
+- Optional representative ballot examples for each rare style with `--debug-rare-styles`
 - Optional summary statistics with `--summarize` flag
 
 **Options:**
@@ -61,6 +63,7 @@ python3 anonymize_cvr.py input.csv output.csv --summarize
 - `--stylecol`: Index of style column (default: 6)
 - `--headerlen`: Number of header columns (default: 8)
 - `--summarize, -s`: Print detailed summary of CVR statistics
+- `--debug-rare-styles`: Print representative ballot examples for each rare style
 
 ### guess_votes.py
 

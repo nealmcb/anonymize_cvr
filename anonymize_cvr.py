@@ -20,6 +20,10 @@ from typing import List, Dict, Tuple, Any, Optional, Iterable, Set
 
 from cvr_utils import TempCVRFile, is_parquet_file
 
+CONTEST_NAME_MAX_LENGTH = 60
+VOTE_MAX_LENGTH = 120
+HEADER_FIELD_MAX_LENGTH = 80
+
 
 def pull_style_signature(row: List[str], headerlen: int = 8, stylecol: int = 6) -> str:
     """
@@ -603,6 +607,80 @@ def compute_descriptive_style_name(
     return f"{contest_count}{rarity}{style_number}"
 
 
+def build_representative_ballot_example(
+    row: List[str],
+    headers: List[str],
+    contests: List[str],
+    choices: List[str],
+    headerlen: int = 8,
+    stylecol: int = 6,
+    ballot_type_idx: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Build a compact debug representation of one ballot row.
+
+    Args:
+        row: A single CVR data row.
+        headers: Header row containing metadata field names.
+        contests: Contest row containing contest names per vote column.
+        choices: Choice row containing choice names per vote column.
+        headerlen: Number of non-vote columns at the beginning of each row.
+        stylecol: Index of the style column in the row.
+        ballot_type_idx: Optional index of the BallotType column.
+
+    Returns:
+        Dictionary containing:
+        - header_fields: Non-empty header fields from the representative row.
+        - contests_present: Contest names appearing on this ballot.
+        - votes_cast: Non-zero vote entries for this ballot.
+    """
+    header_fields: Dict[str, str] = {}
+    for idx, field_name in enumerate(headers[:headerlen]):
+        if idx >= len(row):
+            continue
+        value = row[idx].strip()
+        if value:
+            header_name = field_name.strip()
+            key = header_name if header_name else f"Header{idx}"
+            header_fields[key] = value
+
+    if stylecol < len(row):
+        style_value = row[stylecol].strip()
+        if style_value:
+            header_fields["Style"] = style_value
+
+    if ballot_type_idx is not None and ballot_type_idx < len(row):
+        ballot_type = row[ballot_type_idx].strip()
+        if ballot_type:
+            header_fields["BallotType"] = ballot_type
+
+    contests_present: List[str] = []
+    seen_contests: Set[str] = set()
+    votes_cast: List[str] = []
+    for col_idx in range(headerlen, min(len(row), len(contests))):
+        cell_value = row[col_idx].strip()
+        if not cell_value:
+            continue
+        contest_name = contests[col_idx].strip()
+        if not contest_name:
+            contest_name = f"Contest{col_idx}"
+        if contest_name not in seen_contests:
+            seen_contests.add(contest_name)
+            contests_present.append(contest_name)
+        if cell_value == "0":
+            continue
+        choice_name = choices[col_idx].strip() if col_idx < len(choices) else ""
+        if not choice_name:
+            choice_name = f"Choice{col_idx}"
+        votes_cast.append(f"{contest_name} / {choice_name} = {cell_value}")
+
+    return {
+        "header_fields": header_fields,
+        "contests_present": contests_present,
+        "votes_cast": votes_cast,
+    }
+
+
 def update_choice_counts_from_row(
     row: List[str],
     contest_choice_counts: Dict[str, Dict[str, int]],
@@ -990,6 +1068,7 @@ def anonymize_cvr(
     stylecol: int = 6,
     headerlen: int = 8,
     summarize: bool = False,
+    debug_rare_styles: bool = False,
 ) -> Dict[str, int]:
     """
     Anonymize a CVR file by aggregating rare styles.
@@ -1003,6 +1082,7 @@ def anonymize_cvr(
         min_ballots: Minimum number of ballots required per style (default 10)
         stylecol: Index of the style column (default 6 for PrecinctPortion)
         headerlen: Number of header columns before vote data starts (default 8)
+        debug_rare_styles: Whether to include representative rare-style ballot examples
 
     Returns:
         Dictionary with statistics about the anonymization process
@@ -1172,6 +1252,18 @@ def anonymize_cvr(
                     ballot_type = row[ballot_type_idx].strip()
                     if ballot_type and style_value:
                         style_ballot_types[style_value].add(ballot_type)
+            if rows and debug_rare_styles:
+                representative_example = build_representative_ballot_example(
+                    rows[0],
+                    headers,
+                    contests,
+                    choices,
+                    headerlen=headerlen,
+                    stylecol=stylecol,
+                    ballot_type_idx=ballot_type_idx,
+                )
+            else:
+                representative_example = {}
             stats["rare_style_counts"].append(
                 {
                     "descriptive_name": descriptive_name,
@@ -1180,6 +1272,7 @@ def anonymize_cvr(
                     "ballot_types": {
                         style: sorted(types) for style, types in style_ballot_types.items()
                     },
+                    "representative_example": representative_example,
                 }
             )
         else:
@@ -1660,6 +1753,11 @@ Examples:
     parser.add_argument(
         "--summarize", "-s", action="store_true", help="Print detailed summary of CVR statistics"
     )
+    parser.add_argument(
+        "--debug-rare-styles",
+        action="store_true",
+        help="Print representative ballot examples for each rare style",
+    )
 
     args = parser.parse_args()
 
@@ -1671,6 +1769,7 @@ Examples:
             args.stylecol,
             args.headerlen,
             args.summarize,
+            args.debug_rare_styles,
         )
 
         print("Anonymization complete!")
@@ -1696,6 +1795,31 @@ Examples:
                 print(
                     f"    {entry['descriptive_name']}: {entry['ballot_count']} ballot(s) from {orig_desc}{ballot_type_str}"
                 )
+                representative_example = entry.get("representative_example", {})
+                if args.debug_rare_styles and representative_example:
+                    header_fields = representative_example.get("header_fields", {})
+                    if header_fields:
+                        header_fields_str = ", ".join(
+                            f"{k}={v[:HEADER_FIELD_MAX_LENGTH]}"
+                            for k, v in sorted(header_fields.items())
+                        )
+                        print(f"      Example fields: {header_fields_str}")
+                    contests_present = representative_example.get("contests_present", [])
+                    if contests_present:
+                        print(
+                            "      Example contests: "
+                            + ", ".join(
+                                contest[:CONTEST_NAME_MAX_LENGTH]
+                                for contest in contests_present
+                            )
+                        )
+                    votes_cast = representative_example.get("votes_cast", [])
+                    if votes_cast:
+                        print("      Example votes:")
+                        for vote in votes_cast:
+                            print(f"        {vote[:VOTE_MAX_LENGTH]}")
+                    else:
+                        print("      Example votes: (none)")
         print(f"  Aggregated rows created: {stats['aggregated_rows']}")
         print(f"  Final styles: {stats['final_styles']}")
         print(f"  Output written to: {args.output_file}")
