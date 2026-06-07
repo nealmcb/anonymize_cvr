@@ -282,6 +282,9 @@ class RowIndex:
         self.rows_by_ballot_type: Dict[str, List[int]] = {}
         # total non-empty rows counted (includes skip rows)
         self.total_rows: int = 0
+        # style_string -> first ballot row seen for that style; populated during
+        # build_row_index and used by --debug-rare-styles to print example ballots.
+        self.first_row_for_style: Dict[str, List[str]] = {}
 
     def style_for_row(self, row_idx: int) -> Optional[str]:
         """Return the style string for a row, or None if the row was skipped."""
@@ -385,6 +388,7 @@ def build_row_index(
                 style_id = len(index.style_strings)
                 style_table[style_str] = style_id
                 index.style_strings.append(style_str)
+                index.first_row_for_style[style_str] = list(row)
             style_id = style_table[style_str]
             index.style_id_for_row.append(style_id)
             style = index.style_strings[style_id]
@@ -1696,11 +1700,36 @@ def perform_redaction(
 # ---------------------------------------------------------------------------
 
 
+def _format_rare_style_example(style: str, row: List[str], db: CvrDatabase) -> str:
+    """
+    Format one example ballot row as a multi-line string for --debug-rare-styles.
+
+    Shows each contest that appears on this style (bit == '1') followed by the
+    choice values for that contest's columns.  Only non-empty vote cells are shown;
+    columns that are blank are omitted.  Returns one indented line per contest,
+    joined by newlines.
+    """
+    lines = []
+    for bit, contest_name in zip(style, db.contest_names):
+        if bit != "1":
+            continue
+        choice_meta = db.contest_choice_meta.get(contest_name, {})
+        votes = []
+        for col_idx, choice_name in sorted(choice_meta.items()):
+            val = row[col_idx].strip() if col_idx < len(row) else ""
+            if val:
+                votes.append(f"{choice_name}={val}")
+        vote_str = ", ".join(votes) if votes else "(no choices marked)"
+        lines.append(f"      {contest_name}: {vote_str}")
+    return "\n".join(lines) if lines else "      (no contests)"
+
+
 def _report_check_results(
     index: RowIndex,
     db: CvrDatabase,
     needs: RedactionNeeds,
     redact_on_precinct: bool,
+    debug_rare_styles: bool = False,
 ) -> None:
     """Print the rare-style report and redaction verdict to stdout."""
     ballot_types_by_style: Dict[str, Set[str]] = defaultdict(set)
@@ -1757,6 +1786,12 @@ def _report_check_results(
             parts.append(f"style #{style_to_id[style]}")
             print(f"    {count} ballot(s)  [{', '.join(parts)}]")
 
+            if debug_rare_styles:
+                example_row = index.first_row_for_style.get(style)
+                if example_row is not None:
+                    print("      Representative ballot contests and votes:")
+                    print(_format_rare_style_example(style, example_row, db))
+
     if needs.needs_redaction():
         print("\nRedaction is needed.")
     else:
@@ -1768,6 +1803,7 @@ def execute_check(
     min_ballots: int,
     redact_on_precinct: bool,
     style_col: Optional[int] = None,
+    debug_rare_styles: bool = False,
 ) -> None:
     """
     Run check mode: pass 1 only.  Reports whether the CVR needs redaction.
@@ -1801,7 +1837,7 @@ def execute_check(
         for warning in needs.leakage_warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
 
-        _report_check_results(index, db, needs, redact_on_precinct)
+        _report_check_results(index, db, needs, redact_on_precinct, debug_rare_styles)
 
 
 def execute_redact(
@@ -1812,6 +1848,7 @@ def execute_redact(
     redact_on_precinct: bool,
     style_col: Optional[int] = None,
     no_contest_balancing: bool = False,
+    debug_rare_styles: bool = False,
 ) -> None:
     """
     Run full redaction: passes 1, 2, and 3.  Writes the anonymized CVR.
@@ -1845,7 +1882,7 @@ def execute_redact(
         for warning in needs.leakage_warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
 
-        _report_check_results(index, db, needs, redact_on_precinct)
+        _report_check_results(index, db, needs, redact_on_precinct, debug_rare_styles)
 
         perform_redaction(
             csv_path,
@@ -1937,6 +1974,14 @@ def parse_args() -> argparse.Namespace:
             "one per line.  Useful for identifying ballot images that also need redaction."
         ),
     )
+    parser.add_argument(
+        "--debug-rare-styles",
+        action="store_true",
+        help=(
+            "For each rare ballot style discovered, print a representative example "
+            "ballot showing which contests appear and how they were voted."
+        ),
+    )
     args = parser.parse_args()
     if args.check and args.output_file is not None:
         parser.error("output_file cannot be specified in --check mode.")
@@ -1958,6 +2003,7 @@ def cli_main() -> None:
             args.min_ballots,
             args.redact_on_precinct,
             args.stylecol,
+            args.debug_rare_styles,
         )
     else:
         execute_redact(
@@ -1968,6 +2014,7 @@ def cli_main() -> None:
             args.redact_on_precinct,
             args.stylecol,
             args.no_contest_balancing,
+            args.debug_rare_styles,
         )
 
 
