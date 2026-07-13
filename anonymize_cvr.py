@@ -1496,18 +1496,52 @@ def collect_rare_rows(
     needs: RedactionNeeds,
     db: CvrDatabase,
     redact_on_precinct: bool,
+    min_ballots: int,
 ) -> Tuple[Set[int], List[str]]:
     """
-    Pass 2 (no contest balancing): stream the file and collect only the rare rows.
-    Builds the aggregate from those rows alone — no borrowing from common styles.
+    Pass 2 (no contest balancing): stream the file and collect the rare rows,
+    borrowing the minimum number of common-style ballots needed to satisfy the
+    mandatory floor of ``min_ballots`` total ballots in the aggregate (Rule a,
+    the C.R.S. 24-72-205.5 requirement).
+
+    Unlike the full path, this deliberately skips the optional balancing steps:
+    it does NOT enforce the per-contest minimum (Rule b) and does NOT balance
+    near-unanimous contests (Rule c).  Borrowing to the floor is achieved by
+    building the aggregate with an empty ``rare_contests`` set, so
+    ``Aggregate.satisfies_minimums()`` reduces to Rule a alone and the borrow
+    loop pulls generic surplus ballots rather than contest-targeted ones.
+
     Returns (redacted_row_indices, aggregate_row).
     """
     rare_privacy_unit_set: Set[Tuple[str, str]] = set(
         needs.rare_privacy_unit_pairs.keys()
     )
 
+    # Full-dataset row counts per privacy unit (from pass 1), used both to size
+    # the borrowing need and for CommonPool's Rule d enforcement.
+    rowcount_by_privacy_unit: Dict[Tuple[str, str], int] = {
+        key: len(row_indices) for key, row_indices in index.rows_by_privacy_unit.items()
+    }
+    rare_total = sum(rowcount_by_privacy_unit.get(k, 0) for k in rare_privacy_unit_set)
+    # How many common ballots we must borrow to reach the floor.
+    gap = max(0, min_ballots - rare_total)
+
     rare_rows: List[List[str]] = []
-    redacted_row_indices: Set[int] = set()
+    donor_by_privacy_unit: Dict[Tuple[str, str], List[List[str]]] = defaultdict(list)
+    # Count of donatable rows loaded so far.  Each pair is only drawn from up to
+    # its own Rule-d surplus (full_count - min_ballots), so loaded_surplus is a
+    # true count of ballots we can actually donate — never inflated by loading
+    # extra rows from a low-surplus pair.  Stop once it covers the gap.
+    loaded_surplus = 0
+    # Blocked styles (exactly min_ballots ballots) can't donate individuals
+    # without violating Rule d, but the whole style can be pulled at once as a
+    # fallback when no surplus donors exist.  Keep a couple as reserve; one is
+    # always enough to cross the floor since each holds min_ballots ballots.
+    blocked_by_privacy_unit: Dict[Tuple[str, str], List[List[str]]] = defaultdict(list)
+    max_blocked_keys = gap // min_ballots + 2 if gap > 0 else 0
+    # Maps id(row) to row_idx for every loaded row, used to recover the
+    # aggregated rows' indices after borrowing.
+    row_to_idx: Dict[int, int] = {}
 
     print("*** Pass 2: Collecting rare ballots (no contest balancing).")
     print()
@@ -1535,9 +1569,76 @@ def collect_rare_rows(
 
             if privacy_unit in rare_privacy_unit_set:
                 rare_rows.append(row)
-                redacted_row_indices.add(row_idx)
+                row_to_idx[id(row)] = row_idx
+            elif gap > 0:
+                pu_count = rowcount_by_privacy_unit.get(privacy_unit, 0)
+                pair_surplus = pu_count - min_ballots
+                if (
+                    pair_surplus > 0
+                    and loaded_surplus < gap
+                    and len(donor_by_privacy_unit.get(privacy_unit, ())) < pair_surplus
+                ):
+                    # Generic donor from a common unit with surplus above the
+                    # floor (Rule d safe).  No contest targeting needed since we
+                    # only aim to reach the total-ballot floor.  Never load more
+                    # from a pair than it can actually spare.
+                    donor_by_privacy_unit[privacy_unit].append(row)
+                    row_to_idx[id(row)] = row_idx
+                    loaded_surplus += 1
+                elif pu_count == min_ballots and (
+                    privacy_unit in blocked_by_privacy_unit
+                    or len(blocked_by_privacy_unit) < max_blocked_keys
+                ):
+                    # Reserve a whole blocked style as fallback (all its rows).
+                    blocked_by_privacy_unit[privacy_unit].append(row)
+                    row_to_idx[id(row)] = row_idx
 
-    aggregate_row = _build_aggregate_row(rare_rows, db, "AGGREGATED")
+    if gap == 0:
+        # Rare ballots already meet the floor; no borrowing.
+        redacted_row_indices = {row_to_idx[id(r)] for r in rare_rows}
+        aggregate_row = _build_aggregate_row(rare_rows, db, "AGGREGATED")
+        return redacted_row_indices, aggregate_row
+
+    # Borrow to the floor.  Empty rare_contests => Rule a only (no b, no c).
+    print(
+        f"  Rare ballots: {len(rare_rows)}.  Borrowing common ballots to reach "
+        f"the {min_ballots}-ballot minimum"
+    )
+    print("  (per-contest and near-unanimity balancing intentionally skipped).")
+    print()
+    pool = CommonPool(
+        dict(donor_by_privacy_unit), min_ballots, rowcount_by_privacy_unit
+    )
+    aggregate = Aggregate(rare_rows, set(), db, min_ballots)
+    while aggregate.needs_more_total_ballots():
+        result = pool.best_candidate_for(aggregate, db)
+        if result is not None:
+            key, pool_row_idx, ballot = result
+            aggregate.add(ballot)
+            pool.remove(key, pool_row_idx)
+            continue
+        # Individual borrowing stalled (no surplus donors left).  Pull a whole
+        # blocked style — all its ballots leave the dataset together, which is
+        # Rule d safe — as a last resort to reach the floor.
+        if blocked_by_privacy_unit:
+            _, blocked_rows = blocked_by_privacy_unit.popitem()
+            for ballot in blocked_rows:
+                aggregate.add(ballot)
+            continue
+        break
+
+    if aggregate.total_count() < min_ballots:
+        print(
+            f"WARNING: could only assemble {aggregate.total_count()} ballots for "
+            f"the aggregate (minimum {min_ballots}). Not enough surplus common "
+            f"ballots exist county-wide to reach the floor.",
+            file=sys.stderr,
+        )
+
+    redacted_row_indices = {
+        row_to_idx[id(b)] for b in aggregate.ballots if id(b) in row_to_idx
+    }
+    aggregate_row = _build_aggregate_row(aggregate.ballots, db, "AGGREGATED")
     return redacted_row_indices, aggregate_row
 
 
@@ -1656,7 +1757,9 @@ def perform_redaction(
     """Orchestrate passes 2 and 3 to produce the anonymized CVR."""
     if needs.needs_redaction():
         if no_contest_balancing:
-            result = collect_rare_rows(csv_path, index, needs, db, redact_on_precinct)
+            result = collect_rare_rows(
+                csv_path, index, needs, db, redact_on_precinct, min_ballots
+            )
         else:
             result = load_donor_pool(
                 csv_path, index, needs, db, min_ballots, redact_on_precinct
@@ -1671,10 +1774,9 @@ def perform_redaction(
 
         print("\n*** Pass 2 complete.")
         print(f"  Ballots from rare styles/precincts: {rare_count}")
-        if not no_contest_balancing:
-            borrowed_count = len(redacted_row_indices) - rare_count
-            if borrowed_count > 0:
-                print(f"  Ballots borrowed from common styles: {borrowed_count}")
+        borrowed_count = len(redacted_row_indices) - rare_count
+        if borrowed_count > 0:
+            print(f"  Ballots borrowed from common styles: {borrowed_count}")
         print(f"  Total ballots in aggregate: {len(redacted_row_indices)}")
     else:
         redacted_row_indices = set()
@@ -1960,9 +2062,10 @@ def parse_args() -> argparse.Namespace:
         "--no-contest-balancing",
         action="store_true",
         help=(
-            "Do not do contest balancing. Redact only the rare-style ballots "
-            "without borrowing from common styles to satisfy minimums or "
-            "balance near-unanimous contests."
+            "Skip the optional balancing steps: do not enforce a per-contest "
+            "ballot minimum and do not balance near-unanimous contests. Common "
+            "ballots are still borrowed as needed to meet the mandatory total "
+            "minimum of --min-ballots per aggregate (required by law)."
         ),
     )
     parser.add_argument(
@@ -2153,7 +2256,7 @@ class CvrAnonymizerApp:
         )
         tk.Checkbutton(
             frame,
-            text="Do not do contest balancing",
+            text="Skip contest balancing (still meets total ballot minimum)",
             variable=self._no_contest_balancing_var,
             justify=tk.LEFT,
             anchor=tk.W,

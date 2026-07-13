@@ -202,26 +202,49 @@ def _make_test_cases() -> List[TestCase]:
             unexpected=["Traceback"],
         ),
         TestCase(
-            name="no_balancing_skips_borrowing",
+            # --no-contest-balancing still borrows the minimum needed to meet
+            # the mandatory total floor (Rule a), just without per-contest or
+            # unanimity balancing.  A rare style below the floor borrows enough
+            # common ballots to reach it.
+            name="no_balancing_meets_floor",
             input_file=f"{g}/needs_borrowing.csv",
-            output_file=f"{o}/no_balancing_skips_borrowing.csv",
+            output_file=f"{o}/no_balancing_meets_floor.csv",
             redact_flags=["--no-contest-balancing"],
             expected=[
                 "Tally verification passed.",
-                "Total ballots in aggregate: 6",
+                "Ballots borrowed from common styles: 4",
+                "Total ballots in aggregate: 10",
             ],
-            unexpected=["Traceback", "Ballots borrowed from common styles"],
+            unexpected=["Traceback", "WARNING"],
         ),
         TestCase(
+            # Floor is enforced (rare 8 -> borrow 2 -> 10) but the near-unanimous
+            # President contest is deliberately left unbalanced (Rule c skipped).
             name="no_balancing_near_unanimous",
             input_file=f"{g}/near_unanimous_fixable.csv",
             output_file=f"{o}/no_balancing_near_unanimous.csv",
             redact_flags=["--no-contest-balancing"],
             expected=[
                 "Tally verification passed.",
-                "Total ballots in aggregate: 8",
+                "Ballots borrowed from common styles: 2",
+                "Total ballots in aggregate: 10",
             ],
-            unexpected=["Traceback", "Borrowed", "WARNING"],
+            unexpected=["Traceback", "WARNING"],
+        ),
+        TestCase(
+            # Every common style sits at exactly the floor (10), so no individual
+            # donor has surplus.  Reaching the floor requires pulling a whole
+            # blocked style; rare 1 + blocked 10 -> aggregate of 11.
+            name="no_balancing_blocked_pull",
+            input_file="test_case_cvr.csv",
+            output_file=f"{o}/no_balancing_blocked_pull.csv",
+            redact_flags=["--no-contest-balancing"],
+            expected=[
+                "Tally verification passed.",
+                "Ballots borrowed from common styles: 10",
+                "Total ballots in aggregate: 11",
+            ],
+            unexpected=["Traceback", "WARNING"],
         ),
         TestCase(
             name="blocked_style",
