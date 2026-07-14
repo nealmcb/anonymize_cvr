@@ -447,6 +447,14 @@ class RedactionNeeds:
         # Human-readable leakage warnings.  Leakage is reported but not corrected.
         self.leakage_warnings: List[str] = []
 
+        # Structured leakage groups, for --debug-leakage. Each entry is
+        # (style string, sorted list of labels that share that style).
+        # Populated from whichever of named_style/ballot_type was used for
+        # detection (see check_redaction_needs) -- at most one of these two
+        # lists is non-empty in a given run.
+        self.leakage_named_style_groups: List[Tuple[str, List[str]]] = []
+        self.leakage_ballot_type_groups: List[Tuple[str, List[str]]] = []
+
     def needs_redaction(self) -> bool:
         """Return True if any redaction work is required."""
         return len(self.rare_styles) > 0 or len(self.rare_privacy_unit_pairs) > 0
@@ -506,10 +514,11 @@ def check_redaction_needs(
                     named_styles_by_style[row_style].add(named_style)
         for style, named_styles in named_styles_by_style.items():
             if len(named_styles) > 1:
-                names = ", ".join(sorted(named_styles))
+                names = sorted(named_styles)
                 needs.leakage_warnings.append(
-                    f"Leakage: named styles [{names}] all share the same contest pattern"
+                    f"Leakage: named styles [{', '.join(names)}] all share the same contest pattern"
                 )
+                needs.leakage_named_style_groups.append((style, names))
     elif db.ballot_type_idx is not None:
         ballot_types_by_style: Dict[str, Set[str]] = defaultdict(set)
         for ballot_type, row_indices in index.rows_by_ballot_type.items():
@@ -519,10 +528,11 @@ def check_redaction_needs(
                     ballot_types_by_style[row_style].add(ballot_type)
         for style, ballot_types in ballot_types_by_style.items():
             if len(ballot_types) > 1:
-                types = ", ".join(sorted(ballot_types))
+                types = sorted(ballot_types)
                 needs.leakage_warnings.append(
-                    f"Leakage: ballot types [{types}] all share the same contest pattern"
+                    f"Leakage: ballot types [{', '.join(types)}] all share the same contest pattern"
                 )
+                needs.leakage_ballot_type_groups.append((style, types))
 
     return needs
 
@@ -1798,8 +1808,37 @@ def perform_redaction(
 
 
 # ---------------------------------------------------------------------------
-# High-level execution functions (shared by CLI and GUI)
+# --debug-leakage support
 # ---------------------------------------------------------------------------
+
+
+def _fetch_rows_by_index(
+    csv_path: str, wanted_row_indices: Set[int]
+) -> Dict[int, List[str]]:
+    """
+    Second, targeted pass over the CVR: return the raw row content for each
+    row_idx in wanted_row_indices, using the same 0-based, skip-blank-line
+    enumeration as build_row_index. Stops scanning once every wanted index
+    has been found, so this is cheap even for a handful of indices in a
+    large file.
+    """
+    found: Dict[int, List[str]] = {}
+    if not wanted_row_indices:
+        return found
+    remaining = set(wanted_row_indices)
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for _ in range(4):
+            next(reader)
+        for row_idx, row in enumerate(
+            row for row in reader if any(v.strip() for v in row)
+        ):
+            if row_idx in remaining:
+                found[row_idx] = row
+                remaining.discard(row_idx)
+                if not remaining:
+                    break
+    return found
 
 
 def _format_rare_style_example(style: str, row: List[str], db: CvrDatabase) -> str:
@@ -1824,6 +1863,55 @@ def _format_rare_style_example(style: str, row: List[str], db: CvrDatabase) -> s
         vote_str = ", ".join(votes) if votes else "(no choices marked)"
         lines.append(f"      {contest_name}: {vote_str}")
     return "\n".join(lines) if lines else "      (no contests)"
+
+
+def _print_leakage_debug(
+    csv_path: str, db: CvrDatabase, index: RowIndex, needs: RedactionNeeds
+) -> None:
+    """
+    For --debug-leakage: print one representative ballot's contests and
+    votes for each label in each leakage group, so a human can see directly
+    whether real (non-redacted) vote data sits next to a rare/identifying
+    label -- the concern being that even though the labels share a contest
+    pattern, a rare label itself can still identify a voter.
+    """
+    groups: List[Tuple[str, List[str], Dict[str, List[int]]]] = []
+    if needs.leakage_named_style_groups:
+        groups = [
+            (style, labels, index.rows_by_named_style)
+            for style, labels in needs.leakage_named_style_groups
+        ]
+        label_kind = "named style"
+    else:
+        groups = [
+            (style, labels, index.rows_by_ballot_type)
+            for style, labels in needs.leakage_ballot_type_groups
+        ]
+        label_kind = "ballot type"
+
+    if not groups:
+        return
+
+    wanted: Set[int] = set()
+    first_row_idx_for_label: Dict[str, int] = {}
+    for _style, labels, rows_by_label in groups:
+        for label in labels:
+            row_idx = rows_by_label[label][0]
+            first_row_idx_for_label[label] = row_idx
+            wanted.add(row_idx)
+
+    rows = _fetch_rows_by_index(csv_path, wanted)
+
+    print("\nLeakage detail (--debug-leakage):")
+    for style, labels, _rows_by_label in groups:
+        print(f"  Style shared by these {label_kind}s: {', '.join(labels)}")
+        for label in labels:
+            row = rows.get(first_row_idx_for_label[label])
+            print(f'    {label_kind} "{label}", representative ballot:')
+            if row is None:
+                print("      (example row not found)")
+            else:
+                print(_format_rare_style_example(style, row, db))
 
 
 def _report_check_results(
@@ -1906,6 +1994,7 @@ def execute_check(
     redact_on_precinct: bool,
     style_col: Optional[int] = None,
     debug_rare_styles: bool = False,
+    debug_leakage: bool = False,
 ) -> None:
     """
     Run check mode: pass 1 only.  Reports whether the CVR needs redaction.
@@ -1938,6 +2027,8 @@ def execute_check(
 
         for warning in needs.leakage_warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
+        if debug_leakage:
+            _print_leakage_debug(csv_path, db, index, needs)
 
         _report_check_results(index, db, needs, redact_on_precinct, debug_rare_styles)
 
@@ -1951,6 +2042,7 @@ def execute_redact(
     style_col: Optional[int] = None,
     no_contest_balancing: bool = False,
     debug_rare_styles: bool = False,
+    debug_leakage: bool = False,
 ) -> None:
     """
     Run full redaction: passes 1, 2, and 3.  Writes the anonymized CVR.
@@ -1983,6 +2075,8 @@ def execute_redact(
 
         for warning in needs.leakage_warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
+        if debug_leakage:
+            _print_leakage_debug(csv_path, db, index, needs)
 
         _report_check_results(index, db, needs, redact_on_precinct, debug_rare_styles)
 
@@ -2085,6 +2179,15 @@ def parse_args() -> argparse.Namespace:
             "ballot showing which contests appear and how they were voted."
         ),
     )
+    parser.add_argument(
+        "--debug-leakage",
+        action="store_true",
+        help=(
+            "For each leakage warning (distinct named styles or ballot types that "
+            "share the same contest pattern), print a representative example ballot "
+            "for each label involved."
+        ),
+    )
     args = parser.parse_args()
     if args.check and args.output_file is not None:
         parser.error("output_file cannot be specified in --check mode.")
@@ -2107,6 +2210,7 @@ def cli_main() -> None:
             args.redact_on_precinct,
             args.stylecol,
             args.debug_rare_styles,
+            args.debug_leakage,
         )
     else:
         execute_redact(
@@ -2118,6 +2222,7 @@ def cli_main() -> None:
             args.stylecol,
             args.no_contest_balancing,
             args.debug_rare_styles,
+            args.debug_leakage,
         )
 
 
