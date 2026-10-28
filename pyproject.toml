@@ -1,0 +1,11 @@
+[project]
+name = "anonymize_cvr"
+version = "0.2"
+description = "Anonymize Colorado cast vote records per C.R.S. 24-72-205.5"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+
+[project.optional-dependencies]
+parquet = ["pandas", "pyarrow"]

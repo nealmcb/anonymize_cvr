@@ -147,3 +147,7 @@ The anonymization tool automatically:
 - Standard library only (csv, collections, typing) for CSV files
 - Optional: `pandas` and `pyarrow` for Parquet file support
   - Install with: `pip install pandas pyarrow`
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
