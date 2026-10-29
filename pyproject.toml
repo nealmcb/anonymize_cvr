@@ -8,4 +8,5 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12"
 
 [project.optional-dependencies]
+# Parquet input for guess_votes.py; anonymize_cvr.py reads CSV only.
 parquet = ["pandas", "pyarrow"]
