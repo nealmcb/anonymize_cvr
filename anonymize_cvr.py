@@ -24,6 +24,7 @@ Terminology used throughout this module:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import io
 import os
@@ -31,7 +32,7 @@ import queue as queue_module
 import sys
 import threading
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 VERSION = "0.2"
 
@@ -42,6 +43,54 @@ COVERAGE_WEIGHT = 10.0  # weight for contest coverage vs. vote-balance score
 DONOR_SURPLUS_THRESHOLD = (
     3  # minimum surplus above min_ballots for a style/precinct to donate freely
 )
+
+
+# ---------------------------------------------------------------------------
+# Errors reported as messages rather than tracebacks
+# ---------------------------------------------------------------------------
+
+
+class CvrError(Exception):
+    """
+    A problem the person running the tool should see as a plain message:
+    an input file that cannot be read, or an output path that would destroy
+    something.  The command line prints it and exits non-zero; the window
+    shows it in a dialog.
+    """
+
+
+# Failures that mean "this file is not a readable UTF-8 CVR CSV".  Note that
+# UnicodeDecodeError is a subclass of ValueError, and StopIteration comes from
+# next(reader) when the four header rows are not all there.
+_READ_ERRORS = (UnicodeDecodeError, csv.Error, StopIteration)
+
+
+def _read_error_message(path: str, exc: BaseException) -> str:
+    """Describe a failed read of path in terms the reader can act on."""
+    if isinstance(exc, UnicodeDecodeError):
+        return f"{path}: not UTF-8 text; save it as UTF-8 CSV and try again"
+    if isinstance(exc, StopIteration):
+        return (
+            f"{path}: fewer than four header rows; this does not look like a "
+            "Dominion CVR export"
+        )
+    if isinstance(exc, csv.Error):
+        return f"{path}: the CSV could not be read: {exc}"
+    return f"{path}: {exc}"
+
+
+@contextlib.contextmanager
+def _reading(path: str) -> Iterator[None]:
+    """
+    Wrap a block that reads a CVR file, turning the unreadable-file exceptions
+    into a CvrError that names the file and the problem.
+    """
+    try:
+        yield
+    except CvrError:
+        raise
+    except _READ_ERRORS as e:
+        raise CvrError(_read_error_message(path, e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +222,7 @@ class CvrDatabase:
 
     def _read_file(self) -> None:
         """Read the four header rows and detect the line terminator."""
-        with open(self.input_file, "rb") as raw:
+        with _reading(self.input_file), open(self.input_file, "rb") as raw:
             chunk = raw.read(1024)
             if b"\r\n" in chunk:
                 self.lineterminator = "\r\n"
@@ -182,7 +231,9 @@ class CvrDatabase:
             else:
                 self.lineterminator = "\n"
 
-        with open(self.input_file, "r", encoding="utf-8") as f:
+        with _reading(self.input_file), open(
+            self.input_file, "r", encoding="utf-8"
+        ) as f:
             reader = csv.reader(f)
             self.version = next(reader)
             self.contests = next(reader)
@@ -351,7 +402,7 @@ def build_row_index(
 
     expected_cols = len(db.contests)
 
-    with open(csv_path, "r", encoding="utf-8") as f:
+    with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
         for _ in range(4):
             next(reader)
@@ -1307,7 +1358,7 @@ def load_donor_pool(
     print("*** Pass 2: Building the aggregate row.")
     print()
 
-    with open(csv_path, "r", encoding="utf-8") as f:
+    with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
         for _ in range(4):
             next(reader)
@@ -1542,7 +1593,7 @@ def collect_rare_rows(
     print("*** Pass 2: Collecting rare ballots (no contest balancing).")
     print()
 
-    with open(csv_path, "r", encoding="utf-8") as f:
+    with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
         for _ in range(4):
             next(reader)
@@ -1689,7 +1740,7 @@ def _stream_redacted_output(
         else None
     )
     try:
-        with open(csv_path, "r", encoding="utf-8") as f_in:
+        with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f_in:
             with open(output_file, "w", encoding="utf-8", newline="") as f_out:
                 reader = csv.reader(f_in)
                 writer = csv.writer(f_out, lineterminator=db.lineterminator)
@@ -1875,9 +1926,10 @@ def execute_check(
     with TempCVRFile(input_file) as csv_path:
         try:
             db = CvrDatabase(csv_path, 0, style_col)
+        except CvrError:
+            raise
         except (ValueError, OSError) as e:
-            print(f"Error reading CVR file: {e}", file=sys.stderr)
-            return
+            raise CvrError(f"{input_file}: {e}") from e
 
         if redact_on_precinct and db.precinct_portion_idx is None:
             print(
@@ -1890,9 +1942,10 @@ def execute_check(
         print()
         try:
             index = build_row_index(csv_path, db, redact_on_precinct, check_mode=True)
+        except CvrError:
+            raise
         except (ValueError, OSError) as e:
-            print(f"Error building row index: {e}", file=sys.stderr)
-            return
+            raise CvrError(f"{input_file}: {e}") from e
         print()
 
         needs = check_redaction_needs(index, db, min_ballots, redact_on_precinct)
@@ -1919,9 +1972,10 @@ def execute_redact(
     with TempCVRFile(input_file) as csv_path:
         try:
             db = CvrDatabase(csv_path, 0, style_col)
+        except CvrError:
+            raise
         except (ValueError, OSError) as e:
-            print(f"Error reading CVR file: {e}", file=sys.stderr)
-            return
+            raise CvrError(f"{input_file}: {e}") from e
 
         if redact_on_precinct and db.precinct_portion_idx is None:
             print(
@@ -1934,9 +1988,10 @@ def execute_redact(
         print()
         try:
             index = build_row_index(csv_path, db, redact_on_precinct, check_mode=False)
+        except CvrError:
+            raise
         except (ValueError, OSError) as e:
-            print(f"Error building row index: {e}", file=sys.stderr)
-            return
+            raise CvrError(f"{input_file}: {e}") from e
         print()
 
         needs = check_redaction_needs(index, db, min_ballots, redact_on_precinct)
@@ -1946,17 +2001,22 @@ def execute_redact(
 
         _report_check_results(index, db, needs, redact_on_precinct)
 
-        perform_redaction(
-            csv_path,
-            db,
-            index,
-            needs,
-            min_ballots,
-            output_file,
-            redact_on_precinct,
-            redacted_list_file,
-            no_contest_balancing,
-        )
+        try:
+            perform_redaction(
+                csv_path,
+                db,
+                index,
+                needs,
+                min_ballots,
+                output_file,
+                redact_on_precinct,
+                redacted_list_file,
+                no_contest_balancing,
+            )
+        except CvrError:
+            raise
+        except (ValueError, OSError) as e:
+            raise CvrError(f"{output_file}: the redacted CVR was not written: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -2054,23 +2114,27 @@ def parse_args() -> argparse.Namespace:
 
 def cli_main() -> None:
     args = parse_args()
-    if args.check:
-        execute_check(
-            args.input_file,
-            args.min_ballots,
-            args.redact_on_precinct,
-            args.stylecol,
-        )
-    else:
-        execute_redact(
-            args.input_file,
-            args.output_file,
-            args.redacted_list,
-            args.min_ballots,
-            args.redact_on_precinct,
-            args.stylecol,
-            args.no_contest_balancing,
-        )
+    try:
+        if args.check:
+            execute_check(
+                args.input_file,
+                args.min_ballots,
+                args.redact_on_precinct,
+                args.stylecol,
+            )
+        else:
+            execute_redact(
+                args.input_file,
+                args.output_file,
+                args.redacted_list,
+                args.min_ballots,
+                args.redact_on_precinct,
+                args.stylecol,
+                args.no_contest_balancing,
+            )
+    except CvrError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -2527,6 +2591,12 @@ class CvrAnonymizerApp:
             pass
         self.root.after(50, self._poll_output_queue)
 
+    def _show_error_dialog(self, message: str) -> None:
+        """Show a message from a worker thread, on the main thread."""
+        from tkinter import messagebox
+
+        self.root.after(0, lambda: messagebox.showerror("Error", message))
+
     def _run_in_thread(self, func: object, *args: object) -> None:
         import tkinter as tk
 
@@ -2546,6 +2616,9 @@ class CvrAnonymizerApp:
             sys.stderr = writer  # type: ignore[assignment]
             try:
                 func(*args)  # type: ignore[operator]
+            except CvrError as e:
+                print(f"\nError: {e}")
+                self._show_error_dialog(str(e))
             except Exception as e:
                 print(f"\nUnexpected error: {e}")
             finally:

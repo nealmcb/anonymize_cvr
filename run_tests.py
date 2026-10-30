@@ -139,6 +139,22 @@ def run_test(tc: TestCase) -> bool:
         return True
 
 
+def _bad_input(name: str, transform: Callable[[bytes], bytes]) -> str:
+    """
+    Write a damaged copy of a good CVR into OUTPUT_DIR and return its path.
+
+    Used to check that unreadable input produces a plain message naming the
+    file and the problem, not a traceback.
+    """
+    path = f"{OUTPUT_DIR}/{name}"
+    with open(f"{GENERATED_DIR}/needs_borrowing.csv", "rb") as f:
+        data = f.read()
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(transform(data))
+    return path
+
+
 @dataclass
 class CommandTest:
     """
@@ -202,6 +218,59 @@ def _make_command_tests() -> List[CommandTest]:
             expected=[
                 "module imported without tkinter",
                 "No redaction needed.",
+            ],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # Fremont's 2020 CVR is Latin-1, which used to raise
+            # UnicodeDecodeError.
+            name="bad_input_not_utf8",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{OUTPUT_DIR}/not_utf8.csv",
+            ],
+            setup=lambda: _bad_input(
+                "not_utf8.csv",
+                lambda d: d.replace(b"Alice", "Alic\u00e9".encode("latin-1"), 1),
+            ),
+            expect_failure=True,
+            expected=["not UTF-8 text; save it as UTF-8 CSV and try again"],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # A NUL byte, or a field over 131,072 characters, raises csv.Error.
+            name="bad_input_csv_error",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{OUTPUT_DIR}/nul_byte.csv",
+            ],
+            setup=lambda: _bad_input(
+                "nul_byte.csv", lambda d: d.replace(b"Alice", b"Ali\x00ce", 1)
+            ),
+            expect_failure=True,
+            expected=["the CSV could not be read:"],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # Fewer than four header rows used to raise StopIteration.
+            name="bad_input_too_few_header_rows",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{OUTPUT_DIR}/short.csv",
+            ],
+            setup=lambda: _bad_input(
+                "short.csv", lambda d: b"\n".join(d.split(b"\n")[:3])
+            ),
+            expect_failure=True,
+            expected=[
+                "fewer than four header rows; this does not look like a "
+                "Dominion CVR export"
             ],
             unexpected=["Traceback"],
         ),
