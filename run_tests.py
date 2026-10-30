@@ -9,6 +9,7 @@ Usage:
     python run_tests.py
 """
 
+import glob
 import os
 import subprocess
 import sys
@@ -155,6 +156,27 @@ def _bad_input(name: str, transform: Callable[[bytes], bytes]) -> str:
     return path
 
 
+def _remove_if_present(path: str) -> None:
+    """Delete path if it is there, so a test starts from a known state."""
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def _no_leftovers(*paths: str) -> List[str]:
+    """
+    Return failures for any of paths that exists, or any temporary .part file
+    left in OUTPUT_DIR.  Output is written to a temporary file and moved into
+    place only on success, so a failed run must leave neither.
+    """
+    failures = []
+    for path in paths:
+        if os.path.exists(path):
+            failures.append(f"  file should not exist after a failed run: {path}")
+    for leftover in glob.glob(f"{OUTPUT_DIR}/*.part"):
+        failures.append(f"  temporary file left behind: {leftover}")
+    return failures
+
+
 @dataclass
 class CommandTest:
     """
@@ -220,6 +242,25 @@ def _make_command_tests() -> List[CommandTest]:
                 "No redaction needed.",
             ],
             unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # The --redacted-list path is in a directory that does not exist,
+            # so the run fails after the output file would have been opened.
+            # Neither the output nor a temporary file may survive that.
+            name="no_partial_output_after_failure",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/partial.csv",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/no_such_directory/list.txt",
+            ],
+            setup=lambda: _remove_if_present(f"{OUTPUT_DIR}/partial.csv"),
+            expect_failure=True,
+            expected=["Error:"],
+            unexpected=["Traceback"],
+            after=lambda: _no_leftovers(f"{OUTPUT_DIR}/partial.csv"),
         ),
         CommandTest(
             # Fremont's 2020 CVR is Latin-1, which used to raise

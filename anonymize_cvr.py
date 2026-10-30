@@ -30,6 +30,7 @@ import io
 import os
 import queue as queue_module
 import sys
+import tempfile
 import threading
 from collections import defaultdict
 from typing import Dict, Iterator, List, Optional, Set, Tuple
@@ -1703,6 +1704,39 @@ def _add_to_tally(tally: List[float], row: List[str], headerlen: int) -> None:
                 pass
 
 
+def _temp_output_path(path: str) -> str:
+    """
+    Create an empty temporary file next to path and return its name.
+
+    Output is written there and moved into place with os.replace() only once
+    the run has finished, so a failed run cannot leave a partial file that
+    looks like a finished redacted CVR.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    try:
+        fd, tmp = tempfile.mkstemp(
+            prefix=os.path.basename(path) + ".", suffix=".part", dir=directory
+        )
+    except OSError as e:
+        raise CvrError(f"{path}: cannot be written: {e.strerror or e}") from e
+    os.close(fd)
+    # mkstemp creates the file private to its owner; a redacted CVR is meant
+    # to be published, so give it the usual permissions instead.
+    try:
+        os.chmod(tmp, 0o644)
+    except OSError:
+        pass
+    return tmp
+
+
+def _remove_quietly(path: str) -> None:
+    """Delete path if it is there, ignoring any failure to do so."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _stream_redacted_output(
     csv_path: str,
     db: CvrDatabase,
@@ -1734,60 +1768,77 @@ def _stream_redacted_output(
     pre_tally: List[float] = [0.0] * num_vote_cols
     post_tally: List[float] = [0.0] * num_vote_cols
 
-    list_out = (
-        open(redacted_list_file, "w", encoding="utf-8")
-        if redacted_list_file is not None
-        else None
-    )
+    tmp_output: Optional[str] = None
+    tmp_list: Optional[str] = None
     try:
-        with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f_in:
-            with open(output_file, "w", encoding="utf-8", newline="") as f_out:
-                reader = csv.reader(f_in)
-                writer = csv.writer(f_out, lineterminator=db.lineterminator)
+        tmp_output = _temp_output_path(output_file)
+        if redacted_list_file is not None:
+            tmp_list = _temp_output_path(redacted_list_file)
 
-                for _ in range(4):
-                    writer.writerow(_remove_columns(next(reader), cols_to_remove))
+        list_out = (
+            open(tmp_list, "w", encoding="utf-8") if tmp_list is not None else None
+        )
+        try:
+            with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f_in:
+                with open(tmp_output, "w", encoding="utf-8", newline="") as f_out:
+                    reader = csv.reader(f_in)
+                    writer = csv.writer(f_out, lineterminator=db.lineterminator)
 
-                for row_idx, row in enumerate(
-                    r for r in reader if any(v.strip() for v in r)
-                ):
-                    if row_idx > 0 and row_idx % 100000 == 0:
-                        print(f"  {row_idx:,} rows written...", flush=True)
-                    _add_to_tally(pre_tally, row, db.headerlen)
-                    if row_idx in redacted_row_indices:
-                        if list_out is not None and len(row) > 4:
-                            list_out.write(row[4] + "\n")
-                        writer.writerow(
-                            _remove_columns(
-                                _redact_ballot_row(row, db, redact_on_precinct),
-                                cols_to_remove,
+                    for _ in range(4):
+                        writer.writerow(_remove_columns(next(reader), cols_to_remove))
+
+                    for row_idx, row in enumerate(
+                        r for r in reader if any(v.strip() for v in r)
+                    ):
+                        if row_idx > 0 and row_idx % 100000 == 0:
+                            print(f"  {row_idx:,} rows written...", flush=True)
+                        _add_to_tally(pre_tally, row, db.headerlen)
+                        if row_idx in redacted_row_indices:
+                            if list_out is not None and len(row) > 4:
+                                list_out.write(row[4] + "\n")
+                            writer.writerow(
+                                _remove_columns(
+                                    _redact_ballot_row(row, db, redact_on_precinct),
+                                    cols_to_remove,
+                                )
                             )
-                        )
-                    else:
-                        out_row = _blank_geographic_fields(row, db, redact_on_precinct)
-                        writer.writerow(_remove_columns(out_row, cols_to_remove))
-                        _add_to_tally(post_tally, row, db.headerlen)
+                        else:
+                            out_row = _blank_geographic_fields(
+                                row, db, redact_on_precinct
+                            )
+                            writer.writerow(_remove_columns(out_row, cols_to_remove))
+                            _add_to_tally(post_tally, row, db.headerlen)
 
-                if aggregate_row is not None:
-                    writer.writerow(_remove_columns(aggregate_row, cols_to_remove))
-                    _add_to_tally(post_tally, aggregate_row, db.headerlen)
-    finally:
-        if list_out is not None:
-            list_out.close()
+                    if aggregate_row is not None:
+                        writer.writerow(_remove_columns(aggregate_row, cols_to_remove))
+                        _add_to_tally(post_tally, aggregate_row, db.headerlen)
+        finally:
+            if list_out is not None:
+                list_out.close()
 
-    if aggregate_row is not None:
-        mismatches = 0
-        for i in range(num_vote_cols):
-            if abs(pre_tally[i] - post_tally[i]) > 0.001:
-                mismatches += 1
-        if mismatches:
-            print(
-                f"WARNING: tally mismatch in {mismatches} vote column(s) — "
-                f"redacted output may be incorrect.",
-                file=sys.stderr,
-            )
-        else:
-            print("  Tally verification passed.")
+        if aggregate_row is not None:
+            mismatches = 0
+            for i in range(num_vote_cols):
+                if abs(pre_tally[i] - post_tally[i]) > 0.001:
+                    mismatches += 1
+            if mismatches:
+                print(
+                    f"WARNING: tally mismatch in {mismatches} vote column(s) — "
+                    f"redacted output may be incorrect.",
+                    file=sys.stderr,
+                )
+            else:
+                print("  Tally verification passed.")
+
+        # The run finished: move the finished files into place.
+        os.replace(tmp_output, output_file)
+        if tmp_list is not None and redacted_list_file is not None:
+            os.replace(tmp_list, redacted_list_file)
+    except BaseException:
+        for leftover in (tmp_output, tmp_list):
+            if leftover is not None:
+                _remove_quietly(leftover)
+        raise
 
 
 def perform_redaction(
@@ -2016,7 +2067,9 @@ def execute_redact(
         except CvrError:
             raise
         except (ValueError, OSError) as e:
-            raise CvrError(f"{output_file}: the redacted CVR was not written: {e}") from e
+            raise CvrError(
+                f"{output_file}: the redacted CVR was not written: {e}"
+            ) from e
 
 
 # ---------------------------------------------------------------------------
