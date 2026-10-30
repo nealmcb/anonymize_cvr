@@ -27,18 +27,20 @@ This is alpha-quality software. Use at your own risk.
 
 ### anonymize_cvr.py
 
-Anonymizes CVR files by aggregating rare styles to meet the 10-ballot minimum threshold. Supports both CSV and Parquet file formats.
+Anonymizes CVR files by aggregating rare styles to meet the 10-ballot minimum threshold. Reads CVR
+exports in CSV format.
 
 **Usage:**
 ```bash
 python3 anonymize_cvr.py input.csv output.csv
-python3 anonymize_cvr.py input.parquet output.csv
 python3 anonymize_cvr.py input.csv output.csv --min-ballots 15
-python3 anonymize_cvr.py input.csv output.csv --summarize
+python3 anonymize_cvr.py --check input.csv
+python3 anonymize_cvr.py input.csv output.csv --redact-on-precinct
 ```
 
 **Features:**
-- Supports CSV and Parquet file formats (auto-detected by file extension)
+- Reads CSV CVR exports
+- `--check` reports whether redaction is needed, without writing output
 - Combines all rare styles (< 10 ballots) into a single aggregation
 - Ensures at least 10 ballots per contest in the aggregation
 - Adds contrasting votes to prevent unanimous/near-unanimous patterns
@@ -54,69 +56,33 @@ python3 anonymize_cvr.py input.csv output.csv --summarize
   - Total extra CVRs added to aggregate
   - Final aggregate totals (with ballot counts, vote counts, and undervotes)
 - Style mapping output includes BallotType information for each CVR style
-- Optional summary statistics with `--summarize` flag
 
 **Options:**
-- `--min-ballots`: Minimum ballots required per style (default: 10)
-- `--stylecol`: Index of style column (default: 6)
-- `--headerlen`: Number of header columns (default: 8)
-- `--summarize, -s`: Print detailed summary of CVR statistics
-
-### guess_votes.py
-
-Generates test cases and analyzes how anonymization affects vote guessing probabilities. Supports both CSV and Parquet file formats.
-
-**Usage:**
-```bash
-# Generate test case with default settings
-python3 guess_votes.py
-
-# Analyze an existing CVR file
-python3 guess_votes.py original_cvr.csv
-python3 guess_votes.py original_cvr.parquet
-
-# Compare original vs anonymized CVR
-python3 guess_votes.py original_cvr.csv --anonymized-cvr anonymized_cvr.csv
-```
-
-**Features:**
-- Supports CSV and Parquet file formats (auto-detected by file extension)
-- Generates test CVR files with configurable ballot styles
-- Calculates vote probabilities from:
-  - Overall election results
-  - Original CVR file (style-level probabilities)
-  - Anonymized CVR file (aggregated probabilities)
-- Generates three probability files for comparison:
-  - `test_case_results_probabilities.csv`: Overall election results
-  - `test_case_original_probabilities.csv`: Original CVR-refined probabilities
-  - `test_case_anonymized_probabilities.csv`: Anonymized CVR-refined probabilities
-
-**Options:**
-- `original_cvr_file`: Path to original CVR file (CSV or Parquet format) (positional, optional)
-- `--anonymized-cvr, -a`: Path to anonymized CVR file (CSV or Parquet format)
-- `--election-name, -n`: Name of the election (default: "Test Election 2024")
-- `--min-ballots, -m`: Minimum ballots per style to be considered common (default: 10)
-
-### cvr_utils.py
-
-Shared utility module for reading CVR files in different formats. This module provides:
-- Automatic format detection (CSV vs Parquet)
-- Conversion from Parquet to CSV format
-- `TempCVRFile` context manager for seamless handling of both formats
+- `--check`, `-c`: report whether redaction is needed, without writing output
+- `--min-ballots N`: minimum ballots required per style or precinct (default: 10)
+- `--redact-on-precinct`: aggregate precincts with fewer than the minimum, instead of blanking the
+  PrecinctPortion column
+- `--stylecol N`: column index (0-based) of a named style field, if present
+- `--no-contest-balancing`: skip the optional per-contest minimum and near-unanimity balancing
+- `--redacted-list FILENAME`: write the ImprintedId of every redacted ballot to FILENAME
+- `--version`: print the version
 
 ## Example Workflow
 
-1. **Anonymize a CVR file:**
+1. **Check whether a CVR file needs redaction:**
    ```bash
-   python3 anonymize_cvr.py original_cvr.csv anonymized_cvr.csv --summarize
+   python3 anonymize_cvr.py --check original_cvr.csv
    ```
 
-2. **Generate probability analysis:**
+2. **Anonymize the CVR file:**
    ```bash
-   python3 guess_votes.py original_cvr.csv --anonymized-cvr anonymized_cvr.csv
+   python3 anonymize_cvr.py original_cvr.csv anonymized_cvr.csv
    ```
 
-3. **Compare the three probability files** to quantify how anonymization affects vote guessing accuracy.
+3. **Verify that vote totals are preserved:**
+   ```bash
+   python3 verify_redaction.py original_cvr.csv anonymized_cvr.csv
+   ```
 
 ## Aggregation Approach
 
@@ -138,12 +104,11 @@ The anonymization tool automatically:
 - Computes descriptive style names based on contest patterns (format: `<n><R|S><m>` where n=contest count, R=rare/S=common, m=style number)
 - Maps CVR style names to descriptive style names, including BallotType information for each style
 - Detects information leakage when different CVR style names or BallotType values are used for ballots with the same contest pattern
-- Provides optional summaries showing vote totals and probabilities by style
 - Displays detailed aggregation statistics including totals (with ballot counts, vote counts, and undervotes), contests needing balancing, and extra CVRs added
 
 ## Requirements
 
 - Python 3.12+
-- Standard library only (csv, collections, typing) for CSV files
-- Optional: `pandas` and `pyarrow` for Parquet file support
-  - Install with: `pip install pandas pyarrow`
+- Standard library only (csv, collections, typing); no third-party packages are needed
+- `tkinter` only for the optional graphical interface, which starts when the program is run with no
+  command-line arguments.  The command line works without it.
