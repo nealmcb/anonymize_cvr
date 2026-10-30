@@ -13,10 +13,29 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 GENERATED_DIR = "testCases/generated"
 OUTPUT_DIR = "/tmp/anonymize_test_outputs"
+
+
+# Python source that blocks tkinter, so that the command line can be shown to
+# work on a machine with no GUI library installed.
+BLOCK_TKINTER = """
+import sys
+
+
+class _Blocker:
+    '''Meta path finder that makes tkinter unavailable.'''
+
+    def find_spec(self, name, path=None, target=None):
+        if name == "tkinter" or name.startswith("tkinter."):
+            raise ImportError("tkinter blocked for this test")
+        return None
+
+
+sys.meta_path.insert(0, _Blocker())
+"""
 
 
 @dataclass
@@ -118,6 +137,91 @@ def run_test(tc: TestCase) -> bool:
     else:
         print(f"PASS  {tc.name}")
         return True
+
+
+@dataclass
+class CommandTest:
+    """
+    One command run as-is, checked by exit status and output text.
+
+    Used for the robustness checks (bad input, refusing to clobber files,
+    option validation), where what matters is a clear message and a non-zero
+    exit status rather than a redacted CVR.
+    """
+
+    name: str
+    cmd: List[str]
+    expect_failure: bool = False
+    expected: List[str] = field(default_factory=list)
+    unexpected: List[str] = field(default_factory=list)
+    setup: Optional[Callable[[], None]] = None
+    after: Optional[Callable[[], List[str]]] = None
+
+
+def run_command_test(tc: CommandTest) -> bool:
+    """Run one CommandTest. Returns True if all checks pass."""
+    failures = []
+    if tc.setup is not None:
+        tc.setup()
+
+    rc, output = _run(tc.cmd)
+    if tc.expect_failure and rc == 0:
+        failures.append("  command succeeded but was expected to fail")
+    if not tc.expect_failure and rc != 0:
+        failures.append(f"  command exited with code {rc}:\n    {output.strip()}")
+    failures.extend(_check_output(output, tc.expected, tc.unexpected))
+
+    if tc.after is not None:
+        failures.extend(tc.after())
+
+    if failures:
+        print(f"FAIL  {tc.name}")
+        for msg in failures:
+            print(msg)
+        return False
+    print(f"PASS  {tc.name}")
+    return True
+
+
+def _make_command_tests() -> List[CommandTest]:
+    return [
+        CommandTest(
+            # tkinter is imported only inside the window code, so the module
+            # must import, and the command line must work, without it.
+            name="imports_without_tkinter",
+            cmd=[
+                sys.executable,
+                "-c",
+                BLOCK_TKINTER
+                + "import anonymize_cvr\n"
+                + "print('module imported without tkinter')\n"
+                + "sys.argv = ['anonymize_cvr.py', '--check', "
+                + f"{GENERATED_DIR + '/no_redaction.csv'!r}]\n"
+                + "anonymize_cvr.main()\n",
+            ],
+            expected=[
+                "module imported without tkinter",
+                "No redaction needed.",
+            ],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # With no arguments the window is wanted; without tkinter that has
+            # to be a clear message and a non-zero exit, not a traceback.
+            name="no_tkinter_no_args_message",
+            cmd=[
+                sys.executable,
+                "-c",
+                BLOCK_TKINTER
+                + "import anonymize_cvr\n"
+                + "sys.argv = ['anonymize_cvr.py']\n"
+                + "anonymize_cvr.main()\n",
+            ],
+            expect_failure=True,
+            expected=["tkinter is not available"],
+            unexpected=["Traceback"],
+        ),
+    ]
 
 
 def _make_test_cases() -> List[TestCase]:
@@ -272,11 +376,16 @@ def main() -> None:
     print(output.rstrip())
     print()
 
-    test_cases = _make_test_cases()
     passed = 0
     failed = 0
-    for tc in test_cases:
+    for tc in _make_test_cases():
         if run_test(tc):
+            passed += 1
+        else:
+            failed += 1
+
+    for ctc in _make_command_tests():
+        if run_command_test(ctc):
             passed += 1
         else:
             failed += 1

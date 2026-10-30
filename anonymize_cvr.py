@@ -21,6 +21,8 @@ Terminology used throughout this module:
   ballot_type   — the value in the BallotType column, if present.
 """
 
+from __future__ import annotations
+
 import argparse
 import csv
 import io
@@ -28,8 +30,6 @@ import os
 import queue as queue_module
 import sys
 import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -2078,6 +2078,8 @@ def cli_main() -> None:
 
 class CvrAnonymizerApp:
     def __init__(self, root: tk.Tk) -> None:
+        import tkinter as tk
+
         self.root = root
         self.root.title("CVR Anonymizer")
         self.root.geometry("700x540")
@@ -2096,6 +2098,8 @@ class CvrAnonymizerApp:
         self._show_main_menu()
 
     def _on_close(self) -> None:
+        from tkinter import messagebox
+
         if messagebox.askokcancel("Quit", "Are you sure you want to exit?"):
             self.root.destroy()
 
@@ -2108,6 +2112,8 @@ class CvrAnonymizerApp:
     # ------------------------------------------------------------------
 
     def _show_main_menu(self) -> None:
+        import tkinter as tk
+
         self._clear_screen()
 
         tk.Label(
@@ -2175,6 +2181,8 @@ class CvrAnonymizerApp:
     # ------------------------------------------------------------------
 
     def _show_config_screen(self) -> None:
+        import tkinter as tk
+
         self._clear_screen()
 
         tk.Label(
@@ -2252,6 +2260,8 @@ class CvrAnonymizerApp:
         ).pack(side=tk.LEFT, padx=8)
 
     def _save_config(self) -> None:
+        from tkinter import messagebox
+
         try:
             min_b = int(self._min_ballots_var.get().strip())
             if min_b < 1:
@@ -2287,6 +2297,8 @@ class CvrAnonymizerApp:
     # ------------------------------------------------------------------
 
     def _show_redact_screen(self) -> None:
+        import tkinter as tk
+
         self._clear_screen()
 
         tk.Label(
@@ -2335,6 +2347,8 @@ class CvrAnonymizerApp:
         ).pack(pady=5)
 
     def _run_redaction(self) -> None:
+        from tkinter import messagebox
+
         input_file = self._redact_input_var.get().strip()
         output_file = self._redact_output_var.get().strip()
         redacted_list = self._redact_list_var.get().strip() or None
@@ -2362,6 +2376,8 @@ class CvrAnonymizerApp:
     # ------------------------------------------------------------------
 
     def _show_check_screen(self) -> None:
+        import tkinter as tk
+
         self._clear_screen()
 
         tk.Label(
@@ -2394,6 +2410,8 @@ class CvrAnonymizerApp:
         ).pack(pady=5)
 
     def _run_check(self) -> None:
+        from tkinter import messagebox
+
         input_file = self._check_input_var.get().strip()
 
         if not input_file:
@@ -2419,6 +2437,8 @@ class CvrAnonymizerApp:
         var: tk.StringVar,
         browse_cmd: object,
     ) -> None:
+        import tkinter as tk
+
         row = tk.Frame(parent)
         row.pack(fill=tk.X, pady=3)
         tk.Label(row, text=label, width=24, anchor=tk.E, justify=tk.RIGHT).pack(
@@ -2430,6 +2450,8 @@ class CvrAnonymizerApp:
         tk.Button(row, text="Browse...", command=browse_cmd).pack(side=tk.LEFT)  # type: ignore[arg-type]
 
     def _add_status_area(self, parent: tk.Misc, height: int) -> tk.Text:
+        import tkinter as tk
+
         status_frame = tk.Frame(parent, padx=10, pady=5)
         status_frame.pack(fill=tk.BOTH, expand=True)
         tk.Label(status_frame, text="Status:").pack(anchor=tk.W)
@@ -2450,6 +2472,8 @@ class CvrAnonymizerApp:
         return text
 
     def _browse_open(self, var: tk.StringVar, title: str) -> None:
+        from tkinter import filedialog
+
         path = filedialog.askopenfilename(
             title=title, filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
@@ -2457,6 +2481,8 @@ class CvrAnonymizerApp:
             var.set(path)
 
     def _browse_save(self, var: tk.StringVar, title: str, default_ext: str) -> None:
+        from tkinter import filedialog
+
         if default_ext == ".txt":
             filetypes = [("Text files", "*.txt"), ("All files", "*.*")]
         else:
@@ -2476,6 +2502,8 @@ class CvrAnonymizerApp:
             var.set(path)
 
     def _append_status(self, text: str) -> None:
+        import tkinter as tk
+
         assert self._status_text is not None
         self._status_text.config(state=tk.NORMAL)
         self._status_text.insert(tk.END, text)
@@ -2483,6 +2511,8 @@ class CvrAnonymizerApp:
         self._status_text.config(state=tk.DISABLED)
 
     def _poll_output_queue(self) -> None:
+        import tkinter as tk
+
         try:
             while True:
                 item = self._output_queue.get_nowait()
@@ -2496,6 +2526,8 @@ class CvrAnonymizerApp:
         self.root.after(50, self._poll_output_queue)
 
     def _run_in_thread(self, func: object, *args: object) -> None:
+        import tkinter as tk
+
         assert self._run_button is not None
         assert self._status_text is not None
         self._run_button.config(state=tk.DISABLED)
@@ -2532,10 +2564,27 @@ class CvrAnonymizerApp:
 def main() -> None:
     if len(sys.argv) > 1:
         cli_main()
-    else:
-        root = tk.Tk()
-        app = CvrAnonymizerApp(root)
-        root.mainloop()
+        return
+
+    # tkinter is imported here, not at the top of the file, so that the command
+    # line works on machines with no GUI library installed.
+    try:
+        import tkinter as tk
+    except ImportError as e:
+        print(
+            "No command-line arguments were given, so the graphical interface "
+            "was requested,\nbut tkinter is not available: "
+            f"{e}.\n"
+            "Install tkinter (for example the python3-tk package), or run "
+            "anonymize_cvr.py\nfrom the command line; try --help for the "
+            "options.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    root = tk.Tk()
+    app = CvrAnonymizerApp(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":
