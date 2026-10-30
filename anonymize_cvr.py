@@ -1893,6 +1893,60 @@ def perform_redaction(
 
 
 # ---------------------------------------------------------------------------
+# Output path safety
+# ---------------------------------------------------------------------------
+
+
+def _same_file(path_a: str, path_b: str) -> bool:
+    """
+    True if the two paths name the same file.
+
+    os.path.samefile() is the reliable answer (it follows symlinks and hard
+    links) but needs both files to exist, so a path that is not there yet is
+    compared as a normalised absolute path instead.
+    """
+    try:
+        if os.path.exists(path_a) and os.path.exists(path_b):
+            return os.path.samefile(path_a, path_b)
+    except OSError:
+        pass
+    return os.path.normcase(os.path.abspath(path_a)) == os.path.normcase(
+        os.path.abspath(path_b)
+    )
+
+
+def check_output_not_input(
+    input_file: str, output_file: str, redacted_list_file: Optional[str]
+) -> None:
+    """
+    Raise CvrError if an output path would write over the input CVR.
+
+    Opening the output for writing empties the input while it is still being
+    read, which destroys it and produces garbage.
+    """
+    for description, path in (
+        ("output file", output_file),
+        ("--redacted-list file", redacted_list_file),
+    ):
+        if path is not None and _same_file(input_file, path):
+            raise CvrError(
+                f"{path}: the {description} is the same file as the input CVR; "
+                "redacting a file onto itself would destroy it, so choose a "
+                "different path"
+            )
+
+
+def existing_output_paths(
+    output_file: str, redacted_list_file: Optional[str]
+) -> List[str]:
+    """Return the output paths that are already there and would be replaced."""
+    paths = [output_file]
+    if redacted_list_file is not None:
+        paths.append(redacted_list_file)
+    return [path for path in paths if os.path.exists(path)]
+
+
+# ---------------------------------------------------------------------------
 # High-level execution functions (shared by CLI and GUI)
 # ---------------------------------------------------------------------------
 
@@ -2015,11 +2069,26 @@ def execute_redact(
     redact_on_precinct: bool,
     style_col: Optional[int] = None,
     no_contest_balancing: bool = False,
+    force: bool = False,
 ) -> None:
     """
     Run full redaction: passes 1, 2, and 3.  Writes the anonymized CVR.
     All output goes to stdout/stderr (redirectable for GUI use).
+
+    Refuses to write over the input CVR, and refuses to replace an existing
+    output file unless force is set.  The window version confirms with the
+    person instead, and passes force once they have agreed.
     """
+    check_output_not_input(input_file, output_file, redacted_list_file)
+    if not force:
+        existing = existing_output_paths(output_file, redacted_list_file)
+        if existing:
+            raise CvrError(
+                ", ".join(existing)
+                + ": already there; move or rename it, choose another path, or "
+                "pass --force to replace it"
+            )
+
     with TempCVRFile(input_file) as csv_path:
         try:
             db = CvrDatabase(csv_path, 0, style_col)
@@ -2142,6 +2211,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Replace the output file, and the --redacted-list file, if they "
+            "already exist.  Without this, an existing file is left alone and "
+            "the run stops."
+        ),
+    )
+    parser.add_argument(
         "--redacted-list",
         metavar="FILENAME",
         default=None,
@@ -2184,6 +2262,7 @@ def cli_main() -> None:
                 args.redact_on_precinct,
                 args.stylecol,
                 args.no_contest_balancing,
+                args.force,
             )
     except CvrError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -2479,6 +2558,22 @@ class CvrAnonymizerApp:
             messagebox.showerror("Error", "Please select an output CVR file path.")
             return
 
+        try:
+            check_output_not_input(input_file, output_file, redacted_list)
+        except CvrError as e:
+            messagebox.showerror("Error", str(e))
+            return
+
+        existing = existing_output_paths(output_file, redacted_list)
+        if existing:
+            if not messagebox.askyesno(
+                "Replace existing file?",
+                "These files are already there and will be replaced:\n\n"
+                + "\n".join(existing)
+                + "\n\nReplace them?",
+            ):
+                return
+
         self._run_in_thread(
             execute_redact,
             input_file,
@@ -2488,6 +2583,7 @@ class CvrAnonymizerApp:
             self.config_redact_on_precinct,
             self.config_style_col,
             self.config_no_contest_balancing,
+            True,
         )
 
     # ------------------------------------------------------------------

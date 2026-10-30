@@ -11,6 +11,7 @@ Usage:
 
 import glob
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -156,6 +157,47 @@ def _bad_input(name: str, transform: Callable[[bytes], bytes]) -> str:
     return path
 
 
+def _copy_input(name: str) -> str:
+    """Copy a good CVR into OUTPUT_DIR under name and return its path."""
+    path = f"{OUTPUT_DIR}/{name}"
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    shutil.copyfile(f"{GENERATED_DIR}/needs_borrowing.csv", path)
+    return path
+
+
+def _unchanged(path: str, reference: str) -> List[str]:
+    """Return a failure if path no longer matches reference byte for byte."""
+    with open(path, "rb") as f:
+        actual = f.read()
+    with open(reference, "rb") as f:
+        expected = f.read()
+    if actual != expected:
+        return [f"  file was modified but should not have been: {path}"]
+    return []
+
+
+def _symlink(target: str, link: str) -> None:
+    """Point link at target, replacing any previous link."""
+    if os.path.lexists(link):
+        os.remove(link)
+    os.symlink(target, link)
+
+
+def _write_file(path: str, contents: str) -> None:
+    """Create path with the given contents."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(contents)
+
+
+def _is_replaced(path: str) -> List[str]:
+    """Return a failure if path still holds the placeholder contents."""
+    with open(path, encoding="utf-8") as f:
+        if f.read().startswith("old contents"):
+            return [f"  file was not replaced: {path}"]
+    return []
+
+
 def _remove_if_present(path: str) -> None:
     """Delete path if it is there, so a test starts from a known state."""
     if os.path.exists(path):
@@ -242,6 +284,95 @@ def _make_command_tests() -> List[CommandTest]:
                 "No redaction needed.",
             ],
             unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # Writing the output onto the input empties the input while it is
+            # still being read, which destroys it.
+            name="output_same_as_input_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{OUTPUT_DIR}/same_file.csv",
+                f"{OUTPUT_DIR}/same_file.csv",
+            ],
+            setup=lambda: _copy_input("same_file.csv"),
+            expect_failure=True,
+            expected=["is the same file as the input CVR"],
+            unexpected=["Traceback"],
+            after=lambda: _unchanged(
+                f"{OUTPUT_DIR}/same_file.csv",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ),
+        ),
+        CommandTest(
+            # The same file reached by a different path: os.path.samefile
+            # follows the symlink.
+            name="output_same_as_input_via_symlink_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{OUTPUT_DIR}/symlinked.csv",
+                f"{OUTPUT_DIR}/symlink_to_input.csv",
+            ],
+            setup=lambda: _symlink(
+                _copy_input("symlinked.csv"), f"{OUTPUT_DIR}/symlink_to_input.csv"
+            ),
+            expect_failure=True,
+            expected=["is the same file as the input CVR"],
+            unexpected=["Traceback"],
+            after=lambda: _unchanged(
+                f"{OUTPUT_DIR}/symlinked.csv",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ),
+        ),
+        CommandTest(
+            name="existing_output_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/already_there.csv",
+            ],
+            setup=lambda: _copy_input("already_there.csv"),
+            expect_failure=True,
+            expected=["already there", "--force"],
+            unexpected=["Traceback"],
+            after=lambda: _unchanged(
+                f"{OUTPUT_DIR}/already_there.csv",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ),
+        ),
+        CommandTest(
+            name="existing_redacted_list_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/list_output.csv",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/already_a_list.txt",
+            ],
+            setup=lambda: _write_file(
+                f"{OUTPUT_DIR}/already_a_list.txt", "keep me\n"
+            ),
+            expect_failure=True,
+            expected=["already_a_list.txt", "already there", "--force"],
+            unexpected=["Traceback"],
+            after=lambda: _no_leftovers(f"{OUTPUT_DIR}/list_output.csv"),
+        ),
+        CommandTest(
+            name="existing_output_replaced_with_force",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/forced.csv",
+                "--force",
+            ],
+            setup=lambda: _write_file(f"{OUTPUT_DIR}/forced.csv", "old contents\n"),
+            expected=["Tally verification passed.", "Output written to"],
+            unexpected=["Traceback"],
+            after=lambda: _is_replaced(f"{OUTPUT_DIR}/forced.csv"),
         ),
         CommandTest(
             # The --redacted-list path is in a directory that does not exist,
@@ -519,6 +650,10 @@ def _make_test_cases() -> List[TestCase]:
 
 
 def main() -> None:
+    # Start from an empty output directory: a redaction now refuses to replace
+    # an existing output file unless --force is given, and leftovers from an
+    # earlier run would make every test look like that refusal.
+    shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     print("Regenerating test input files...")

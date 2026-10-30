@@ -65,6 +65,9 @@ python3 anonymize_cvr.py input.csv output.csv --redact-on-precinct
   PrecinctPortion column
 - `--stylecol N`: column index (0-based) of a named style field, if present
 - `--no-contest-balancing`: skip the optional per-contest minimum and near-unanimity balancing
+- `--force`: replace the output file, and the `--redacted-list` file, if they already exist.
+  Without it an existing file is left alone and the run stops, and the output is never allowed to
+  be the input file itself
 - `--redacted-list FILENAME`: write the ImprintedId of every redacted ballot to FILENAME
 - `--version`: print the version
 
