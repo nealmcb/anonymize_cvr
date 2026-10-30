@@ -2042,6 +2042,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("output_file cannot be specified in --check mode.")
     if not args.check and args.output_file is None:
         parser.error("output_file is required when not in --check mode.")
+    if args.min_ballots < 2:
+        parser.error("--min-ballots must be at least 2.")
     return args
 
 
@@ -2264,10 +2266,10 @@ class CvrAnonymizerApp:
 
         try:
             min_b = int(self._min_ballots_var.get().strip())
-            if min_b < 1:
+            if min_b < 2:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("Error", "Minimum Ballots must be a positive integer.")
+            messagebox.showerror("Error", "Minimum Ballots must be a whole number of at least 2.")
             return
 
         style_col_str = self._style_col_var.get().strip()

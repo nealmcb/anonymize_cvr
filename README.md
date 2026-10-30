@@ -59,7 +59,8 @@ python3 anonymize_cvr.py input.csv output.csv --redact-on-precinct
 
 **Options:**
 - `--check`, `-c`: report whether redaction is needed, without writing output
-- `--min-ballots N`: minimum ballots required per style or precinct (default: 10)
+- `--min-ballots N`: minimum ballots required per style or precinct (default: 10, and at
+  least 2)
 - `--redact-on-precinct`: aggregate precincts with fewer than the minimum, instead of blanking the
   PrecinctPortion column
 - `--stylecol N`: column index (0-based) of a named style field, if present

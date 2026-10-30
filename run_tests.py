@@ -206,6 +206,49 @@ def _make_command_tests() -> List[CommandTest]:
             unexpected=["Traceback"],
         ),
         CommandTest(
+            # 0 or a negative --min-ballots turned redaction off while the run
+            # still looked like a success.
+            name="min_ballots_zero_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                "--min-ballots",
+                "0",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ],
+            expect_failure=True,
+            expected=["--min-ballots must be at least 2."],
+            unexpected=["Traceback", "No redaction needed."],
+        ),
+        CommandTest(
+            name="min_ballots_negative_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                "--min-ballots",
+                "-3",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ],
+            expect_failure=True,
+            expected=["--min-ballots must be at least 2."],
+            unexpected=["Traceback", "No redaction needed."],
+        ),
+        CommandTest(
+            name="min_ballots_two_accepted",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                "--min-ballots",
+                "2",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ],
+            expected=["No redaction needed."],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
             # With no arguments the window is wanted; without tkinter that has
             # to be a clear message and a non-zero exit, not a traceback.
             name="no_tkinter_no_args_message",
