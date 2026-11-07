@@ -234,7 +234,7 @@ class CommandTest:
     expect_failure: bool = False
     expected: List[str] = field(default_factory=list)
     unexpected: List[str] = field(default_factory=list)
-    setup: Optional[Callable[[], None]] = None
+    setup: Optional[Callable[[], object]] = None
     after: Optional[Callable[[], List[str]]] = None
 
 
@@ -352,9 +352,7 @@ def _make_command_tests() -> List[CommandTest]:
                 "--redacted-list",
                 f"{OUTPUT_DIR}/already_a_list.txt",
             ],
-            setup=lambda: _write_file(
-                f"{OUTPUT_DIR}/already_a_list.txt", "keep me\n"
-            ),
+            setup=lambda: _write_file(f"{OUTPUT_DIR}/already_a_list.txt", "keep me\n"),
             expect_failure=True,
             expected=["already_a_list.txt", "already there", "--force"],
             unexpected=["Traceback"],

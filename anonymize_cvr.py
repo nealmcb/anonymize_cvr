@@ -33,7 +33,10 @@ import sys
 import tempfile
 import threading
 from collections import defaultdict
-from typing import Dict, Iterator, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Set, Tuple
+
+if TYPE_CHECKING:
+    import tkinter as tk
 
 VERSION = "0.3"
 
@@ -1038,7 +1041,8 @@ def _redact_ballot_row(
     if not redact_on_precinct and db.precinct_portion_idx is not None:
         result[db.precinct_portion_idx] = ""
     for col_idx in range(db.headerlen, len(result)):
-        if (ballot[col_idx] != ""): result[col_idx] = "*"           # CHANGED
+        if ballot[col_idx] != "":
+            result[col_idx] = "*"  # CHANGED
     return result
 
 
@@ -2481,7 +2485,9 @@ class CvrAnonymizerApp:
             if min_b < 2:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("Error", "Minimum Ballots must be a whole number of at least 2.")
+            messagebox.showerror(
+                "Error", "Minimum Ballots must be a whole number of at least 2."
+            )
             return
 
         style_col_str = self._style_col_var.get().strip()
