@@ -33,7 +33,7 @@ from tkinter import filedialog, messagebox
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
-VERSION = "0.2"
+VERSION = "0.3"
 
 MIN_BALLOTS_DEFAULT = 10
 NEAR_UNANIMOUS_THRESHOLD = 2  # "all but N votes" triggers balancing (Rule c)
@@ -188,6 +188,11 @@ class CvrDatabase:
             self.contests = next(reader)
             self.choices = next(reader)
             self.headers = next(reader)
+
+        if not self.headers or self.headers[0].strip() != "CvrNumber":
+            raise ValueError(
+                "Not a supported CVR file: row 4 does not start with 'CvrNumber'."
+            )
 
         if self.headerlen == 0:
             for cell in self.contests:
@@ -1688,13 +1693,25 @@ def _stream_redacted_output(
         if redacted_list_file is not None
         else None
     )
+
+    # add 'anonymize_cvr-v0.3'
+    ourversion = f"anonymize_cvr-v{VERSION}"
+
     try:
         with open(csv_path, "r", encoding="utf-8") as f_in:
             with open(output_file, "w", encoding="utf-8", newline="") as f_out:
                 reader = csv.reader(f_in)
                 writer = csv.writer(f_out, lineterminator=db.lineterminator)
 
-                for _ in range(4):
+                # first row is special: remove columns, then add our version
+                modrow = _remove_columns(next(reader), cols_to_remove)
+                if "" in modrow:
+                    modrow[modrow.index("")] = ourversion
+                elif len(modrow) < len(db.headers) - len(cols_to_remove):
+                    modrow.append(ourversion)
+                writer.writerow(modrow)
+
+                for _ in range(3):
                     writer.writerow(_remove_columns(next(reader), cols_to_remove))
 
                 for row_idx, row in enumerate(
