@@ -41,6 +41,17 @@ the exposure.
 This is a volunteer project. We'll acknowledge reports as soon as we can, work on a fix or
 mitigation, coordinate disclosure with you, and credit you if you wish.
 
+## Vendored code
+
+The browser version, `anonymize_cvr.html`, includes an unmodified copy of Papa Parse 5.4.1 (MIT
+license) to read CSV files. Upstream:
+
+https://github.com/mholt/PapaParse
+
+The copy is not updated automatically, because Dependabot can't see code pasted into an HTML file.
+When Papa Parse publishes a security fix, the copy has to be replaced by hand. Everything else in
+the project uses only the Python standard library.
+
 ## Supported versions
 
 Fixes are made on the main branch.
