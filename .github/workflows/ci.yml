@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run the test cases
+        run: python run_tests.py
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Pinned so a new release of either tool can't fail the build on its own.
+      - name: Install mypy and black
+        run: pip install mypy==1.17.1 black==26.5.1
+      - name: mypy
+        run: mypy anonymize_cvr.py verify_redaction.py run_tests.py generate_test_cvrs.py
+      - name: black
+        run: black --check anonymize_cvr.py verify_redaction.py run_tests.py generate_test_cvrs.py

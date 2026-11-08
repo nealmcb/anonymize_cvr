@@ -117,6 +117,13 @@ The anonymization tool automatically:
 - `tkinter` only for the optional graphical interface, which starts when the program is run with no
   command-line arguments.  The command line works without it.
 
+## Testing
+
+`python3 run_tests.py` runs the test cases: it generates synthetic CVRs, redacts them, and checks the
+results. `make lint` runs mypy and black. GitHub runs both automatically on every push and pull
+request (see `.github/workflows/ci.yml`), on Python 3.9 and 3.12, and shows a green check or a red X
+on the pull request.
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
