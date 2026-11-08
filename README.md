@@ -112,7 +112,11 @@ The anonymization tool automatically:
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.9 or later
 - Standard library only (csv, collections, typing); no third-party packages are needed
 - `tkinter` only for the optional graphical interface, which starts when the program is run with no
   command-line arguments.  The command line works without it.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
