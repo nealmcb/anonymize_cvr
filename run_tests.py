@@ -410,16 +410,17 @@ def _make_command_tests() -> List[CommandTest]:
             unexpected=["Traceback"],
         ),
         CommandTest(
-            # A NUL byte, or a field over 131,072 characters, raises csv.Error.
+            # A field over 131,072 characters raises csv.Error on every Python version.
+            # (A NUL byte does too before Python 3.11, but not since.)
             name="bad_input_csv_error",
             cmd=[
                 "python",
                 "anonymize_cvr.py",
                 "--check",
-                f"{OUTPUT_DIR}/nul_byte.csv",
+                f"{OUTPUT_DIR}/huge_field.csv",
             ],
             setup=lambda: _bad_input(
-                "nul_byte.csv", lambda d: d.replace(b"Alice", b"Ali\x00ce", 1)
+                "huge_field.csv", lambda d: d.replace(b"Alice", b"A" * 200000, 1)
             ),
             expect_failure=True,
             expected=["the CSV could not be read:"],
