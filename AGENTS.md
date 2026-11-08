@@ -1,5 +1,5 @@
 ## Dependencies         
-- Python 3.12 required 
+- Python 3.9 or later required 
 - Manage dependencies via uv and virtual environments
 - Use Typer for CLI parsing
 

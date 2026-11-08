@@ -22,7 +22,6 @@ from typing import List, Optional
 
 from anonymize_cvr import CvrDatabase
 
-
 PROGRESS_INTERVAL = 100_000
 
 

@@ -9,14 +9,35 @@ Usage:
     python run_tests.py
 """
 
+import glob
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 GENERATED_DIR = "testCases/generated"
 OUTPUT_DIR = "/tmp/anonymize_test_outputs"
+
+
+# Python source that blocks tkinter, so that the command line can be shown to
+# work on a machine with no GUI library installed.
+BLOCK_TKINTER = """
+import sys
+
+
+class _Blocker:
+    '''Meta path finder that makes tkinter unavailable.'''
+
+    def find_spec(self, name, path=None, target=None):
+        if name == "tkinter" or name.startswith("tkinter."):
+            raise ImportError("tkinter blocked for this test")
+        return None
+
+
+sys.meta_path.insert(0, _Blocker())
+"""
 
 
 @dataclass
@@ -118,6 +139,371 @@ def run_test(tc: TestCase) -> bool:
     else:
         print(f"PASS  {tc.name}")
         return True
+
+
+def _bad_input(name: str, transform: Callable[[bytes], bytes]) -> str:
+    """
+    Write a damaged copy of a good CVR into OUTPUT_DIR and return its path.
+
+    Used to check that unreadable input produces a plain message naming the
+    file and the problem, not a traceback.
+    """
+    path = f"{OUTPUT_DIR}/{name}"
+    with open(f"{GENERATED_DIR}/needs_borrowing.csv", "rb") as f:
+        data = f.read()
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(transform(data))
+    return path
+
+
+def _copy_input(name: str) -> str:
+    """Copy a good CVR into OUTPUT_DIR under name and return its path."""
+    path = f"{OUTPUT_DIR}/{name}"
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    shutil.copyfile(f"{GENERATED_DIR}/needs_borrowing.csv", path)
+    return path
+
+
+def _unchanged(path: str, reference: str) -> List[str]:
+    """Return a failure if path no longer matches reference byte for byte."""
+    with open(path, "rb") as f:
+        actual = f.read()
+    with open(reference, "rb") as f:
+        expected = f.read()
+    if actual != expected:
+        return [f"  file was modified but should not have been: {path}"]
+    return []
+
+
+def _symlink(target: str, link: str) -> None:
+    """Point link at target, replacing any previous link."""
+    if os.path.lexists(link):
+        os.remove(link)
+    os.symlink(target, link)
+
+
+def _write_file(path: str, contents: str) -> None:
+    """Create path with the given contents."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(contents)
+
+
+def _is_replaced(path: str) -> List[str]:
+    """Return a failure if path still holds the placeholder contents."""
+    with open(path, encoding="utf-8") as f:
+        if f.read().startswith("old contents"):
+            return [f"  file was not replaced: {path}"]
+    return []
+
+
+def _remove_if_present(path: str) -> None:
+    """Delete path if it is there, so a test starts from a known state."""
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def _no_leftovers(*paths: str) -> List[str]:
+    """
+    Return failures for any of paths that exists, or any temporary .part file
+    left in OUTPUT_DIR.  Output is written to a temporary file and moved into
+    place only on success, so a failed run must leave neither.
+    """
+    failures = []
+    for path in paths:
+        if os.path.exists(path):
+            failures.append(f"  file should not exist after a failed run: {path}")
+    for leftover in glob.glob(f"{OUTPUT_DIR}/*.part"):
+        failures.append(f"  temporary file left behind: {leftover}")
+    return failures
+
+
+@dataclass
+class CommandTest:
+    """
+    One command run as-is, checked by exit status and output text.
+
+    Used for the robustness checks (bad input, refusing to clobber files,
+    option validation), where what matters is a clear message and a non-zero
+    exit status rather than a redacted CVR.
+    """
+
+    name: str
+    cmd: List[str]
+    expect_failure: bool = False
+    expected: List[str] = field(default_factory=list)
+    unexpected: List[str] = field(default_factory=list)
+    setup: Optional[Callable[[], object]] = None
+    after: Optional[Callable[[], List[str]]] = None
+
+
+def run_command_test(tc: CommandTest) -> bool:
+    """Run one CommandTest. Returns True if all checks pass."""
+    failures = []
+    if tc.setup is not None:
+        tc.setup()
+
+    rc, output = _run(tc.cmd)
+    if tc.expect_failure and rc == 0:
+        failures.append("  command succeeded but was expected to fail")
+    if not tc.expect_failure and rc != 0:
+        failures.append(f"  command exited with code {rc}:\n    {output.strip()}")
+    failures.extend(_check_output(output, tc.expected, tc.unexpected))
+
+    if tc.after is not None:
+        failures.extend(tc.after())
+
+    if failures:
+        print(f"FAIL  {tc.name}")
+        for msg in failures:
+            print(msg)
+        return False
+    print(f"PASS  {tc.name}")
+    return True
+
+
+def _make_command_tests() -> List[CommandTest]:
+    return [
+        CommandTest(
+            # tkinter is imported only inside the window code, so the module
+            # must import, and the command line must work, without it.
+            name="imports_without_tkinter",
+            cmd=[
+                sys.executable,
+                "-c",
+                BLOCK_TKINTER
+                + "import anonymize_cvr\n"
+                + "print('module imported without tkinter')\n"
+                + "sys.argv = ['anonymize_cvr.py', '--check', "
+                + f"{GENERATED_DIR + '/no_redaction.csv'!r}]\n"
+                + "anonymize_cvr.main()\n",
+            ],
+            expected=[
+                "module imported without tkinter",
+                "No redaction needed.",
+            ],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # Writing the output onto the input empties the input while it is
+            # still being read, which destroys it.
+            name="output_same_as_input_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{OUTPUT_DIR}/same_file.csv",
+                f"{OUTPUT_DIR}/same_file.csv",
+            ],
+            setup=lambda: _copy_input("same_file.csv"),
+            expect_failure=True,
+            expected=["is the same file as the input CVR"],
+            unexpected=["Traceback"],
+            after=lambda: _unchanged(
+                f"{OUTPUT_DIR}/same_file.csv",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ),
+        ),
+        CommandTest(
+            # The same file reached by a different path: os.path.samefile
+            # follows the symlink.
+            name="output_same_as_input_via_symlink_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{OUTPUT_DIR}/symlinked.csv",
+                f"{OUTPUT_DIR}/symlink_to_input.csv",
+            ],
+            setup=lambda: _symlink(
+                _copy_input("symlinked.csv"), f"{OUTPUT_DIR}/symlink_to_input.csv"
+            ),
+            expect_failure=True,
+            expected=["is the same file as the input CVR"],
+            unexpected=["Traceback"],
+            after=lambda: _unchanged(
+                f"{OUTPUT_DIR}/symlinked.csv",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ),
+        ),
+        CommandTest(
+            name="existing_output_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/already_there.csv",
+            ],
+            setup=lambda: _copy_input("already_there.csv"),
+            expect_failure=True,
+            expected=["already there", "--force"],
+            unexpected=["Traceback"],
+            after=lambda: _unchanged(
+                f"{OUTPUT_DIR}/already_there.csv",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ),
+        ),
+        CommandTest(
+            name="existing_redacted_list_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/list_output.csv",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/already_a_list.txt",
+            ],
+            setup=lambda: _write_file(f"{OUTPUT_DIR}/already_a_list.txt", "keep me\n"),
+            expect_failure=True,
+            expected=["already_a_list.txt", "already there", "--force"],
+            unexpected=["Traceback"],
+            after=lambda: _no_leftovers(f"{OUTPUT_DIR}/list_output.csv"),
+        ),
+        CommandTest(
+            name="existing_output_replaced_with_force",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/forced.csv",
+                "--force",
+            ],
+            setup=lambda: _write_file(f"{OUTPUT_DIR}/forced.csv", "old contents\n"),
+            expected=["Tally verification passed.", "Output written to"],
+            unexpected=["Traceback"],
+            after=lambda: _is_replaced(f"{OUTPUT_DIR}/forced.csv"),
+        ),
+        CommandTest(
+            # The --redacted-list path is in a directory that does not exist,
+            # so the run fails after the output file would have been opened.
+            # Neither the output nor a temporary file may survive that.
+            name="no_partial_output_after_failure",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/partial.csv",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/no_such_directory/list.txt",
+            ],
+            setup=lambda: _remove_if_present(f"{OUTPUT_DIR}/partial.csv"),
+            expect_failure=True,
+            expected=["Error:"],
+            unexpected=["Traceback"],
+            after=lambda: _no_leftovers(f"{OUTPUT_DIR}/partial.csv"),
+        ),
+        CommandTest(
+            # Fremont's 2020 CVR is Latin-1, which used to raise
+            # UnicodeDecodeError.
+            name="bad_input_not_utf8",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{OUTPUT_DIR}/not_utf8.csv",
+            ],
+            setup=lambda: _bad_input(
+                "not_utf8.csv",
+                lambda d: d.replace(b"Alice", "Alic\u00e9".encode("latin-1"), 1),
+            ),
+            expect_failure=True,
+            expected=["not UTF-8 text; save it as UTF-8 CSV and try again"],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # A NUL byte, or a field over 131,072 characters, raises csv.Error.
+            name="bad_input_csv_error",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{OUTPUT_DIR}/nul_byte.csv",
+            ],
+            setup=lambda: _bad_input(
+                "nul_byte.csv", lambda d: d.replace(b"Alice", b"Ali\x00ce", 1)
+            ),
+            expect_failure=True,
+            expected=["the CSV could not be read:"],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # Fewer than four header rows used to raise StopIteration.
+            name="bad_input_too_few_header_rows",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{OUTPUT_DIR}/short.csv",
+            ],
+            setup=lambda: _bad_input(
+                "short.csv", lambda d: b"\n".join(d.split(b"\n")[:3])
+            ),
+            expect_failure=True,
+            expected=[
+                "fewer than four header rows; this does not look like a "
+                "Dominion CVR export"
+            ],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # 0 or a negative --min-ballots turned redaction off while the run
+            # still looked like a success.
+            name="min_ballots_zero_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                "--min-ballots",
+                "0",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ],
+            expect_failure=True,
+            expected=["--min-ballots must be at least 2."],
+            unexpected=["Traceback", "No redaction needed."],
+        ),
+        CommandTest(
+            name="min_ballots_negative_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                "--min-ballots",
+                "-3",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ],
+            expect_failure=True,
+            expected=["--min-ballots must be at least 2."],
+            unexpected=["Traceback", "No redaction needed."],
+        ),
+        CommandTest(
+            name="min_ballots_two_accepted",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                "--min-ballots",
+                "2",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ],
+            expected=["No redaction needed."],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # With no arguments the window is wanted; without tkinter that has
+            # to be a clear message and a non-zero exit, not a traceback.
+            name="no_tkinter_no_args_message",
+            cmd=[
+                sys.executable,
+                "-c",
+                BLOCK_TKINTER
+                + "import anonymize_cvr\n"
+                + "sys.argv = ['anonymize_cvr.py']\n"
+                + "anonymize_cvr.main()\n",
+            ],
+            expect_failure=True,
+            expected=["tkinter is not available"],
+            unexpected=["Traceback"],
+        ),
+    ]
 
 
 def _make_test_cases() -> List[TestCase]:
@@ -262,6 +648,10 @@ def _make_test_cases() -> List[TestCase]:
 
 
 def main() -> None:
+    # Start from an empty output directory: a redaction now refuses to replace
+    # an existing output file unless --force is given, and leftovers from an
+    # earlier run would make every test look like that refusal.
+    shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     print("Regenerating test input files...")
@@ -272,11 +662,16 @@ def main() -> None:
     print(output.rstrip())
     print()
 
-    test_cases = _make_test_cases()
     passed = 0
     failed = 0
-    for tc in test_cases:
+    for tc in _make_test_cases():
         if run_test(tc):
+            passed += 1
+        else:
+            failed += 1
+
+    for ctc in _make_command_tests():
+        if run_command_test(ctc):
             passed += 1
         else:
             failed += 1

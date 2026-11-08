@@ -8,7 +8,7 @@
 GENERATED = testCases/generated
 OUTPUT = /tmp/anonymize_test_outputs
 
-test: generate \
+test: clean generate \
     test-no-redaction \
     test-needs-borrowing \
     test-rare-unique-contest \

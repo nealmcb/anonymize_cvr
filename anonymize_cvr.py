@@ -21,19 +21,24 @@ Terminology used throughout this module:
   ballot_type   — the value in the BallotType column, if present.
 """
 
+from __future__ import annotations
+
 import argparse
+import contextlib
 import csv
 import io
 import os
 import queue as queue_module
 import sys
+import tempfile
 import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Set, Tuple
 
-VERSION = "0.2"
+if TYPE_CHECKING:
+    import tkinter as tk
+
+VERSION = "0.3"
 
 MIN_BALLOTS_DEFAULT = 10
 NEAR_UNANIMOUS_THRESHOLD = 2  # "all but N votes" triggers balancing (Rule c)
@@ -42,6 +47,54 @@ COVERAGE_WEIGHT = 10.0  # weight for contest coverage vs. vote-balance score
 DONOR_SURPLUS_THRESHOLD = (
     3  # minimum surplus above min_ballots for a style/precinct to donate freely
 )
+
+
+# ---------------------------------------------------------------------------
+# Errors reported as messages rather than tracebacks
+# ---------------------------------------------------------------------------
+
+
+class CvrError(Exception):
+    """
+    A problem the person running the tool should see as a plain message:
+    an input file that cannot be read, or an output path that would destroy
+    something.  The command line prints it and exits non-zero; the window
+    shows it in a dialog.
+    """
+
+
+# Failures that mean "this file is not a readable UTF-8 CVR CSV".  Note that
+# UnicodeDecodeError is a subclass of ValueError, and StopIteration comes from
+# next(reader) when the four header rows are not all there.
+_READ_ERRORS = (UnicodeDecodeError, csv.Error, StopIteration)
+
+
+def _read_error_message(path: str, exc: BaseException) -> str:
+    """Describe a failed read of path in terms the reader can act on."""
+    if isinstance(exc, UnicodeDecodeError):
+        return f"{path}: not UTF-8 text; save it as UTF-8 CSV and try again"
+    if isinstance(exc, StopIteration):
+        return (
+            f"{path}: fewer than four header rows; this does not look like a "
+            "Dominion CVR export"
+        )
+    if isinstance(exc, csv.Error):
+        return f"{path}: the CSV could not be read: {exc}"
+    return f"{path}: {exc}"
+
+
+@contextlib.contextmanager
+def _reading(path: str) -> Iterator[None]:
+    """
+    Wrap a block that reads a CVR file, turning the unreadable-file exceptions
+    into a CvrError that names the file and the problem.
+    """
+    try:
+        yield
+    except CvrError:
+        raise
+    except _READ_ERRORS as e:
+        raise CvrError(_read_error_message(path, e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +226,7 @@ class CvrDatabase:
 
     def _read_file(self) -> None:
         """Read the four header rows and detect the line terminator."""
-        with open(self.input_file, "rb") as raw:
+        with _reading(self.input_file), open(self.input_file, "rb") as raw:
             chunk = raw.read(1024)
             if b"\r\n" in chunk:
                 self.lineterminator = "\r\n"
@@ -182,12 +235,19 @@ class CvrDatabase:
             else:
                 self.lineterminator = "\n"
 
-        with open(self.input_file, "r", encoding="utf-8") as f:
+        with _reading(self.input_file), open(
+            self.input_file, "r", encoding="utf-8"
+        ) as f:
             reader = csv.reader(f)
             self.version = next(reader)
             self.contests = next(reader)
             self.choices = next(reader)
             self.headers = next(reader)
+
+        if not self.headers or self.headers[0].strip() != "CvrNumber":
+            raise ValueError(
+                "Not a supported CVR file: row 4 does not start with 'CvrNumber'."
+            )
 
         if self.headerlen == 0:
             for cell in self.contests:
@@ -351,7 +411,7 @@ def build_row_index(
 
     expected_cols = len(db.contests)
 
-    with open(csv_path, "r", encoding="utf-8") as f:
+    with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
         for _ in range(4):
             next(reader)
@@ -981,7 +1041,8 @@ def _redact_ballot_row(
     if not redact_on_precinct and db.precinct_portion_idx is not None:
         result[db.precinct_portion_idx] = ""
     for col_idx in range(db.headerlen, len(result)):
-        if (ballot[col_idx] != ""): result[col_idx] = "*"           # CHANGED
+        if ballot[col_idx] != "":
+            result[col_idx] = "*"  # CHANGED
     return result
 
 
@@ -1307,7 +1368,7 @@ def load_donor_pool(
     print("*** Pass 2: Building the aggregate row.")
     print()
 
-    with open(csv_path, "r", encoding="utf-8") as f:
+    with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
         for _ in range(4):
             next(reader)
@@ -1542,7 +1603,7 @@ def collect_rare_rows(
     print("*** Pass 2: Collecting rare ballots (no contest balancing).")
     print()
 
-    with open(csv_path, "r", encoding="utf-8") as f:
+    with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
         for _ in range(4):
             next(reader)
@@ -1652,6 +1713,39 @@ def _add_to_tally(tally: List[float], row: List[str], headerlen: int) -> None:
                 pass
 
 
+def _temp_output_path(path: str) -> str:
+    """
+    Create an empty temporary file next to path and return its name.
+
+    Output is written there and moved into place with os.replace() only once
+    the run has finished, so a failed run cannot leave a partial file that
+    looks like a finished redacted CVR.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    try:
+        fd, tmp = tempfile.mkstemp(
+            prefix=os.path.basename(path) + ".", suffix=".part", dir=directory
+        )
+    except OSError as e:
+        raise CvrError(f"{path}: cannot be written: {e.strerror or e}") from e
+    os.close(fd)
+    # mkstemp creates the file private to its owner; a redacted CVR is meant
+    # to be published, so give it the usual permissions instead.
+    try:
+        os.chmod(tmp, 0o644)
+    except OSError:
+        pass
+    return tmp
+
+
+def _remove_quietly(path: str) -> None:
+    """Delete path if it is there, ignoring any failure to do so."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _stream_redacted_output(
     csv_path: str,
     db: CvrDatabase,
@@ -1683,60 +1777,88 @@ def _stream_redacted_output(
     pre_tally: List[float] = [0.0] * num_vote_cols
     post_tally: List[float] = [0.0] * num_vote_cols
 
-    list_out = (
-        open(redacted_list_file, "w", encoding="utf-8")
-        if redacted_list_file is not None
-        else None
-    )
+    # add 'anonymize_cvr-v0.3'
+    ourversion = f"anonymize_cvr-v{VERSION}"
+
+    tmp_output: Optional[str] = None
+    tmp_list: Optional[str] = None
     try:
-        with open(csv_path, "r", encoding="utf-8") as f_in:
-            with open(output_file, "w", encoding="utf-8", newline="") as f_out:
-                reader = csv.reader(f_in)
-                writer = csv.writer(f_out, lineterminator=db.lineterminator)
+        tmp_output = _temp_output_path(output_file)
+        if redacted_list_file is not None:
+            tmp_list = _temp_output_path(redacted_list_file)
 
-                for _ in range(4):
-                    writer.writerow(_remove_columns(next(reader), cols_to_remove))
+        list_out = (
+            open(tmp_list, "w", encoding="utf-8") if tmp_list is not None else None
+        )
+        try:
+            with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f_in:
+                with open(tmp_output, "w", encoding="utf-8", newline="") as f_out:
+                    reader = csv.reader(f_in)
+                    writer = csv.writer(f_out, lineterminator=db.lineterminator)
 
-                for row_idx, row in enumerate(
-                    r for r in reader if any(v.strip() for v in r)
-                ):
-                    if row_idx > 0 and row_idx % 100000 == 0:
-                        print(f"  {row_idx:,} rows written...", flush=True)
-                    _add_to_tally(pre_tally, row, db.headerlen)
-                    if row_idx in redacted_row_indices:
-                        if list_out is not None and len(row) > 4:
-                            list_out.write(row[4] + "\n")
-                        writer.writerow(
-                            _remove_columns(
-                                _redact_ballot_row(row, db, redact_on_precinct),
-                                cols_to_remove,
+                    # first row is special: remove columns, then add our version
+                    modrow = _remove_columns(next(reader), cols_to_remove)
+                    if "" in modrow:
+                        modrow[modrow.index("")] = ourversion
+                    elif len(modrow) < len(db.headers) - len(cols_to_remove):
+                        modrow.append(ourversion)
+                    writer.writerow(modrow)
+
+                    for _ in range(3):
+                        writer.writerow(_remove_columns(next(reader), cols_to_remove))
+
+                    for row_idx, row in enumerate(
+                        r for r in reader if any(v.strip() for v in r)
+                    ):
+                        if row_idx > 0 and row_idx % 100000 == 0:
+                            print(f"  {row_idx:,} rows written...", flush=True)
+                        _add_to_tally(pre_tally, row, db.headerlen)
+                        if row_idx in redacted_row_indices:
+                            if list_out is not None and len(row) > 4:
+                                list_out.write(row[4] + "\n")
+                            writer.writerow(
+                                _remove_columns(
+                                    _redact_ballot_row(row, db, redact_on_precinct),
+                                    cols_to_remove,
+                                )
                             )
-                        )
-                    else:
-                        out_row = _blank_geographic_fields(row, db, redact_on_precinct)
-                        writer.writerow(_remove_columns(out_row, cols_to_remove))
-                        _add_to_tally(post_tally, row, db.headerlen)
+                        else:
+                            out_row = _blank_geographic_fields(
+                                row, db, redact_on_precinct
+                            )
+                            writer.writerow(_remove_columns(out_row, cols_to_remove))
+                            _add_to_tally(post_tally, row, db.headerlen)
 
-                if aggregate_row is not None:
-                    writer.writerow(_remove_columns(aggregate_row, cols_to_remove))
-                    _add_to_tally(post_tally, aggregate_row, db.headerlen)
-    finally:
-        if list_out is not None:
-            list_out.close()
+                    if aggregate_row is not None:
+                        writer.writerow(_remove_columns(aggregate_row, cols_to_remove))
+                        _add_to_tally(post_tally, aggregate_row, db.headerlen)
+        finally:
+            if list_out is not None:
+                list_out.close()
 
-    if aggregate_row is not None:
-        mismatches = 0
-        for i in range(num_vote_cols):
-            if abs(pre_tally[i] - post_tally[i]) > 0.001:
-                mismatches += 1
-        if mismatches:
-            print(
-                f"WARNING: tally mismatch in {mismatches} vote column(s) — "
-                f"redacted output may be incorrect.",
-                file=sys.stderr,
-            )
-        else:
-            print("  Tally verification passed.")
+        if aggregate_row is not None:
+            mismatches = 0
+            for i in range(num_vote_cols):
+                if abs(pre_tally[i] - post_tally[i]) > 0.001:
+                    mismatches += 1
+            if mismatches:
+                print(
+                    f"WARNING: tally mismatch in {mismatches} vote column(s) — "
+                    f"redacted output may be incorrect.",
+                    file=sys.stderr,
+                )
+            else:
+                print("  Tally verification passed.")
+
+        # The run finished: move the finished files into place.
+        os.replace(tmp_output, output_file)
+        if tmp_list is not None and redacted_list_file is not None:
+            os.replace(tmp_list, redacted_list_file)
+    except BaseException:
+        for leftover in (tmp_output, tmp_list):
+            if leftover is not None:
+                _remove_quietly(leftover)
+        raise
 
 
 def perform_redaction(
@@ -1788,6 +1910,60 @@ def perform_redaction(
         print(f"  Output written to {output_file}.")
         if redacted_list_file is not None:
             print(f"  Redacted ballot list written to {redacted_list_file}.")
+
+
+# ---------------------------------------------------------------------------
+# Output path safety
+# ---------------------------------------------------------------------------
+
+
+def _same_file(path_a: str, path_b: str) -> bool:
+    """
+    True if the two paths name the same file.
+
+    os.path.samefile() is the reliable answer (it follows symlinks and hard
+    links) but needs both files to exist, so a path that is not there yet is
+    compared as a normalised absolute path instead.
+    """
+    try:
+        if os.path.exists(path_a) and os.path.exists(path_b):
+            return os.path.samefile(path_a, path_b)
+    except OSError:
+        pass
+    return os.path.normcase(os.path.abspath(path_a)) == os.path.normcase(
+        os.path.abspath(path_b)
+    )
+
+
+def check_output_not_input(
+    input_file: str, output_file: str, redacted_list_file: Optional[str]
+) -> None:
+    """
+    Raise CvrError if an output path would write over the input CVR.
+
+    Opening the output for writing empties the input while it is still being
+    read, which destroys it and produces garbage.
+    """
+    for description, path in (
+        ("output file", output_file),
+        ("--redacted-list file", redacted_list_file),
+    ):
+        if path is not None and _same_file(input_file, path):
+            raise CvrError(
+                f"{path}: the {description} is the same file as the input CVR; "
+                "redacting a file onto itself would destroy it, so choose a "
+                "different path"
+            )
+
+
+def existing_output_paths(
+    output_file: str, redacted_list_file: Optional[str]
+) -> List[str]:
+    """Return the output paths that are already there and would be replaced."""
+    paths = [output_file]
+    if redacted_list_file is not None:
+        paths.append(redacted_list_file)
+    return [path for path in paths if os.path.exists(path)]
 
 
 # ---------------------------------------------------------------------------
@@ -1875,9 +2051,10 @@ def execute_check(
     with TempCVRFile(input_file) as csv_path:
         try:
             db = CvrDatabase(csv_path, 0, style_col)
+        except CvrError:
+            raise
         except (ValueError, OSError) as e:
-            print(f"Error reading CVR file: {e}", file=sys.stderr)
-            return
+            raise CvrError(f"{input_file}: {e}") from e
 
         if redact_on_precinct and db.precinct_portion_idx is None:
             print(
@@ -1890,9 +2067,10 @@ def execute_check(
         print()
         try:
             index = build_row_index(csv_path, db, redact_on_precinct, check_mode=True)
+        except CvrError:
+            raise
         except (ValueError, OSError) as e:
-            print(f"Error building row index: {e}", file=sys.stderr)
-            return
+            raise CvrError(f"{input_file}: {e}") from e
         print()
 
         needs = check_redaction_needs(index, db, min_ballots, redact_on_precinct)
@@ -1911,17 +2089,33 @@ def execute_redact(
     redact_on_precinct: bool,
     style_col: Optional[int] = None,
     no_contest_balancing: bool = False,
+    force: bool = False,
 ) -> None:
     """
     Run full redaction: passes 1, 2, and 3.  Writes the anonymized CVR.
     All output goes to stdout/stderr (redirectable for GUI use).
+
+    Refuses to write over the input CVR, and refuses to replace an existing
+    output file unless force is set.  The window version confirms with the
+    person instead, and passes force once they have agreed.
     """
+    check_output_not_input(input_file, output_file, redacted_list_file)
+    if not force:
+        existing = existing_output_paths(output_file, redacted_list_file)
+        if existing:
+            raise CvrError(
+                ", ".join(existing)
+                + ": already there; move or rename it, choose another path, or "
+                "pass --force to replace it"
+            )
+
     with TempCVRFile(input_file) as csv_path:
         try:
             db = CvrDatabase(csv_path, 0, style_col)
+        except CvrError:
+            raise
         except (ValueError, OSError) as e:
-            print(f"Error reading CVR file: {e}", file=sys.stderr)
-            return
+            raise CvrError(f"{input_file}: {e}") from e
 
         if redact_on_precinct and db.precinct_portion_idx is None:
             print(
@@ -1934,9 +2128,10 @@ def execute_redact(
         print()
         try:
             index = build_row_index(csv_path, db, redact_on_precinct, check_mode=False)
+        except CvrError:
+            raise
         except (ValueError, OSError) as e:
-            print(f"Error building row index: {e}", file=sys.stderr)
-            return
+            raise CvrError(f"{input_file}: {e}") from e
         print()
 
         needs = check_redaction_needs(index, db, min_ballots, redact_on_precinct)
@@ -1946,17 +2141,24 @@ def execute_redact(
 
         _report_check_results(index, db, needs, redact_on_precinct)
 
-        perform_redaction(
-            csv_path,
-            db,
-            index,
-            needs,
-            min_ballots,
-            output_file,
-            redact_on_precinct,
-            redacted_list_file,
-            no_contest_balancing,
-        )
+        try:
+            perform_redaction(
+                csv_path,
+                db,
+                index,
+                needs,
+                min_ballots,
+                output_file,
+                redact_on_precinct,
+                redacted_list_file,
+                no_contest_balancing,
+            )
+        except CvrError:
+            raise
+        except (ValueError, OSError) as e:
+            raise CvrError(
+                f"{output_file}: the redacted CVR was not written: {e}"
+            ) from e
 
 
 # ---------------------------------------------------------------------------
@@ -2029,6 +2231,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Replace the output file, and the --redacted-list file, if they "
+            "already exist.  Without this, an existing file is left alone and "
+            "the run stops."
+        ),
+    )
+    parser.add_argument(
         "--redacted-list",
         metavar="FILENAME",
         default=None,
@@ -2042,6 +2253,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("output_file cannot be specified in --check mode.")
     if not args.check and args.output_file is None:
         parser.error("output_file is required when not in --check mode.")
+    if args.min_ballots < 2:
+        parser.error("--min-ballots must be at least 2.")
     return args
 
 
@@ -2052,23 +2265,28 @@ def parse_args() -> argparse.Namespace:
 
 def cli_main() -> None:
     args = parse_args()
-    if args.check:
-        execute_check(
-            args.input_file,
-            args.min_ballots,
-            args.redact_on_precinct,
-            args.stylecol,
-        )
-    else:
-        execute_redact(
-            args.input_file,
-            args.output_file,
-            args.redacted_list,
-            args.min_ballots,
-            args.redact_on_precinct,
-            args.stylecol,
-            args.no_contest_balancing,
-        )
+    try:
+        if args.check:
+            execute_check(
+                args.input_file,
+                args.min_ballots,
+                args.redact_on_precinct,
+                args.stylecol,
+            )
+        else:
+            execute_redact(
+                args.input_file,
+                args.output_file,
+                args.redacted_list,
+                args.min_ballots,
+                args.redact_on_precinct,
+                args.stylecol,
+                args.no_contest_balancing,
+                args.force,
+            )
+    except CvrError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -2078,6 +2296,8 @@ def cli_main() -> None:
 
 class CvrAnonymizerApp:
     def __init__(self, root: tk.Tk) -> None:
+        import tkinter as tk
+
         self.root = root
         self.root.title("CVR Anonymizer")
         self.root.geometry("700x540")
@@ -2096,6 +2316,8 @@ class CvrAnonymizerApp:
         self._show_main_menu()
 
     def _on_close(self) -> None:
+        from tkinter import messagebox
+
         if messagebox.askokcancel("Quit", "Are you sure you want to exit?"):
             self.root.destroy()
 
@@ -2108,6 +2330,8 @@ class CvrAnonymizerApp:
     # ------------------------------------------------------------------
 
     def _show_main_menu(self) -> None:
+        import tkinter as tk
+
         self._clear_screen()
 
         tk.Label(
@@ -2175,6 +2399,8 @@ class CvrAnonymizerApp:
     # ------------------------------------------------------------------
 
     def _show_config_screen(self) -> None:
+        import tkinter as tk
+
         self._clear_screen()
 
         tk.Label(
@@ -2252,12 +2478,16 @@ class CvrAnonymizerApp:
         ).pack(side=tk.LEFT, padx=8)
 
     def _save_config(self) -> None:
+        from tkinter import messagebox
+
         try:
             min_b = int(self._min_ballots_var.get().strip())
-            if min_b < 1:
+            if min_b < 2:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("Error", "Minimum Ballots must be a positive integer.")
+            messagebox.showerror(
+                "Error", "Minimum Ballots must be a whole number of at least 2."
+            )
             return
 
         style_col_str = self._style_col_var.get().strip()
@@ -2287,6 +2517,8 @@ class CvrAnonymizerApp:
     # ------------------------------------------------------------------
 
     def _show_redact_screen(self) -> None:
+        import tkinter as tk
+
         self._clear_screen()
 
         tk.Label(
@@ -2335,6 +2567,8 @@ class CvrAnonymizerApp:
         ).pack(pady=5)
 
     def _run_redaction(self) -> None:
+        from tkinter import messagebox
+
         input_file = self._redact_input_var.get().strip()
         output_file = self._redact_output_var.get().strip()
         redacted_list = self._redact_list_var.get().strip() or None
@@ -2346,6 +2580,22 @@ class CvrAnonymizerApp:
             messagebox.showerror("Error", "Please select an output CVR file path.")
             return
 
+        try:
+            check_output_not_input(input_file, output_file, redacted_list)
+        except CvrError as e:
+            messagebox.showerror("Error", str(e))
+            return
+
+        existing = existing_output_paths(output_file, redacted_list)
+        if existing:
+            if not messagebox.askyesno(
+                "Replace existing file?",
+                "These files are already there and will be replaced:\n\n"
+                + "\n".join(existing)
+                + "\n\nReplace them?",
+            ):
+                return
+
         self._run_in_thread(
             execute_redact,
             input_file,
@@ -2355,6 +2605,7 @@ class CvrAnonymizerApp:
             self.config_redact_on_precinct,
             self.config_style_col,
             self.config_no_contest_balancing,
+            True,
         )
 
     # ------------------------------------------------------------------
@@ -2362,6 +2613,8 @@ class CvrAnonymizerApp:
     # ------------------------------------------------------------------
 
     def _show_check_screen(self) -> None:
+        import tkinter as tk
+
         self._clear_screen()
 
         tk.Label(
@@ -2394,6 +2647,8 @@ class CvrAnonymizerApp:
         ).pack(pady=5)
 
     def _run_check(self) -> None:
+        from tkinter import messagebox
+
         input_file = self._check_input_var.get().strip()
 
         if not input_file:
@@ -2419,6 +2674,8 @@ class CvrAnonymizerApp:
         var: tk.StringVar,
         browse_cmd: object,
     ) -> None:
+        import tkinter as tk
+
         row = tk.Frame(parent)
         row.pack(fill=tk.X, pady=3)
         tk.Label(row, text=label, width=24, anchor=tk.E, justify=tk.RIGHT).pack(
@@ -2430,6 +2687,8 @@ class CvrAnonymizerApp:
         tk.Button(row, text="Browse...", command=browse_cmd).pack(side=tk.LEFT)  # type: ignore[arg-type]
 
     def _add_status_area(self, parent: tk.Misc, height: int) -> tk.Text:
+        import tkinter as tk
+
         status_frame = tk.Frame(parent, padx=10, pady=5)
         status_frame.pack(fill=tk.BOTH, expand=True)
         tk.Label(status_frame, text="Status:").pack(anchor=tk.W)
@@ -2450,6 +2709,8 @@ class CvrAnonymizerApp:
         return text
 
     def _browse_open(self, var: tk.StringVar, title: str) -> None:
+        from tkinter import filedialog
+
         path = filedialog.askopenfilename(
             title=title, filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
@@ -2457,6 +2718,8 @@ class CvrAnonymizerApp:
             var.set(path)
 
     def _browse_save(self, var: tk.StringVar, title: str, default_ext: str) -> None:
+        from tkinter import filedialog
+
         if default_ext == ".txt":
             filetypes = [("Text files", "*.txt"), ("All files", "*.*")]
         else:
@@ -2476,6 +2739,8 @@ class CvrAnonymizerApp:
             var.set(path)
 
     def _append_status(self, text: str) -> None:
+        import tkinter as tk
+
         assert self._status_text is not None
         self._status_text.config(state=tk.NORMAL)
         self._status_text.insert(tk.END, text)
@@ -2483,6 +2748,8 @@ class CvrAnonymizerApp:
         self._status_text.config(state=tk.DISABLED)
 
     def _poll_output_queue(self) -> None:
+        import tkinter as tk
+
         try:
             while True:
                 item = self._output_queue.get_nowait()
@@ -2495,7 +2762,15 @@ class CvrAnonymizerApp:
             pass
         self.root.after(50, self._poll_output_queue)
 
+    def _show_error_dialog(self, message: str) -> None:
+        """Show a message from a worker thread, on the main thread."""
+        from tkinter import messagebox
+
+        self.root.after(0, lambda: messagebox.showerror("Error", message))
+
     def _run_in_thread(self, func: object, *args: object) -> None:
+        import tkinter as tk
+
         assert self._run_button is not None
         assert self._status_text is not None
         self._run_button.config(state=tk.DISABLED)
@@ -2512,6 +2787,9 @@ class CvrAnonymizerApp:
             sys.stderr = writer  # type: ignore[assignment]
             try:
                 func(*args)  # type: ignore[operator]
+            except CvrError as e:
+                print(f"\nError: {e}")
+                self._show_error_dialog(str(e))
             except Exception as e:
                 print(f"\nUnexpected error: {e}")
             finally:
@@ -2532,10 +2810,27 @@ class CvrAnonymizerApp:
 def main() -> None:
     if len(sys.argv) > 1:
         cli_main()
-    else:
-        root = tk.Tk()
-        app = CvrAnonymizerApp(root)
-        root.mainloop()
+        return
+
+    # tkinter is imported here, not at the top of the file, so that the command
+    # line works on machines with no GUI library installed.
+    try:
+        import tkinter as tk
+    except ImportError as e:
+        print(
+            "No command-line arguments were given, so the graphical interface "
+            "was requested,\nbut tkinter is not available: "
+            f"{e}.\n"
+            "Install tkinter (for example the python3-tk package), or run "
+            "anonymize_cvr.py\nfrom the command line; try --help for the "
+            "options.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    root = tk.Tk()
+    app = CvrAnonymizerApp(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":
