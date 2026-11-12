@@ -3,8 +3,9 @@
 Two related changes to `anonymize_cvr`. Both move a protection into the tool that today depends on a
 county preparing its CVR by hand before running it.
 
-- **Feature A** drops the columns of any contest that appears on fewer than `min_ballots` cards in
-  the whole file.
+- **Feature A** redacts any contest that appears on fewer than `min_ballots` cards in the whole
+  file: its cells are emptied on every ballot row, and its columns in the aggregation line say
+  `Redacted`.
 - **Feature B** detects `BallotType` labels carried by fewer than `min_ballots` ballots, reports
   them, and can drop the column.
 
@@ -16,15 +17,9 @@ contest, because the contest is rarer than the group. Its totals pass straight t
 aggregate row, and every voter it reached is in that row. Contest balancing cannot help either:
 it borrows ballots that carry the contest, and there are not enough of them in the file.
 
-The same holds for the style information on redacted rows. A redacted row keeps a `*` in each cell
-the ballot had (so the style survives redaction), which shows that the ballot carried the rare
-contest even when its votes are hidden.
-
-Counties handle such contests in different ways: some count those few voters' ballots for the
-contest in a neighbouring county that the district also covers, so the county's own results show
-no votes for it; others report the small totals. Either way, the county's CVR should not reveal
-votes, or the presence of the contest, for those few voters. Removing the contest's columns is
-consistent with both practices.
+Counties handle such contests by counting those few voters' ballots for the contest in a
+neighbouring county that the district also covers, so the county's own results show no votes for
+it. The county's CVR must not reveal those voters' votes either.
 
 A ballot-type label has the same problem from the other side. The rarity check looks only at the
 ballot's *fingerprint* (which contests it carries), never at its `BallotType` *label*. A label used
@@ -32,11 +27,18 @@ by only a few ballots can ride on a common fingerprint, so those ballots are nev
 ship with their votes visible next to a label that picks them out. The existing leakage warning
 covers only the reverse case (one fingerprint carried under several labels), and only warns.
 
-## Feature A: drop contests too rare to protect
+## Feature A: redact contests too rare to protect
 
-**Rule.** A contest present on more than 0 and fewer than `min_ballots` cards in the file has all
-its columns removed from the output: the four header rows, every ballot row and the aggregate row.
-The tool reports each removed contest and its card count. On by default; `--keep-rare-contests`
+**Rule.** For a contest present on more than 0 and fewer than `min_ballots` cards in the file:
+
+- its columns stay in the file, in all four header rows;
+- every one of its cells is emptied on every ballot row;
+- in the aggregation line, each of its choice columns says `Redacted`;
+- if the file has no aggregation line (no ballot was rare enough to need one), the tool adds one
+  that says `Redacted` in those columns and 0 in every other vote column. It stands for no
+  ballots.
+
+The tool reports each redacted contest and its card count. On by default; `--keep-rare-contests`
 turns it off.
 
 "Present" means the contest is on the card, voted or not: the same notion the style strings use. A
@@ -45,30 +47,23 @@ contest present on no card is left as it is; it reveals nothing.
 `min_ballots` sets both this threshold and the size of the aggregate. They are equal by definition:
 a contest that cannot fill one aggregate cannot be protected by one.
 
-**Order: drop first, then find the rare ballots.** The rare-ballot detection runs as if the
-dropped contests had never been in the file. A ballot that was rare only because it carried a
-dropped contest then joins a common style and stays visible; one that is still rare on its
-remaining contests is grouped as usual. Detecting first and dropping only at output would pull such
-ballots out of the visible tallies for no privacy gain.
+**Why mark the contest `Redacted`, rather than delete or silently blank it.** Deleting the
+contest's columns would claim that no one in the county could vote in it. Emptying its cells alone
+would claim that no card carried it. Both are false. With `Redacted` in the aggregation line, the
+file says what happened: the contest was redacted, and an empty cell in its columns may be a card
+that carried it. That reading holds for any column whose aggregation entry says `Redacted`. The
+file also keeps its layout, so anything keyed to column positions still works.
 
-### Delete the columns, or blank them
+**Readers of the file.** A tool that reads redacted CVRs must take `Redacted` as unknown, never as
+zero, and should show it to its user rather than drop it. A tool that breaks on the word, or
+counts the added aggregation line as a ballot, needs fixing; the aggregation line has always been
+special (it stands for many ballots), and the added one stands for none.
 
-A county can instead keep a rare contest's columns and empty every cell in them, as some do now.
-Either way the votes, and the presence of the contest, are hidden; with the cells empty, redacted
-rows carry no `*` there either. The two differ in what the file says:
-
-| | Blank the columns | Delete the columns |
-|---|---|---|
-| File layout | Unchanged | The columns disappear; anything keyed to column positions needs the new header |
-| What the file claims | That no card carried the contest, which is false and misleads anyone checking ballot styles | Nothing: the contest is visibly absent |
-| Results that count those voters in another county (0 here) | Its zeros agree | The contest is missing |
-| Results that report the small counts | Its zeros disagree, and a totals check flags them | The contest is missing |
-
-**Default: delete.** It makes no false claim about the ballots. `--rare-contests=blank` empties the
-cells instead, for a county that wants to keep its layout or to agree with results that count those
-voters elsewhere; the report then says the columns were emptied, not removed. Both are idempotent:
-a blanked contest is on no card, so a second run leaves it alone, and a county that blanked the
-columns itself needs nothing more.
+**Order: set the contests aside first, then find the rare ballots.** The rare-ballot detection runs
+as if the redacted contests had never been in the file. A ballot that was rare only because it
+carried a redacted contest then joins a common style and stays visible; one that is still rare on
+its remaining contests is grouped as usual. Detecting first and redacting only at output would pull
+such ballots out of the visible tallies for no privacy gain.
 
 ### Implementation
 
@@ -80,19 +75,20 @@ columns itself needs nothing more.
    merge the styles that become identical, and rebuild `style_strings`, `style_id_for_row` and
    `rows_by_privacy_unit` from the merged styles. This happens in memory: CVR files of several
    hundred megabytes occur, and a second read would double the time.
-3. **Remove them from everything that reasons about contests.** A new
-   `CvrDatabase.drop_contests(names)` takes them out of `contest_names`, `contest_to_columns` and
-   `contest_choice_meta`. Contest balancing (`Aggregate`, `CommonPool`), the near-unanimity check
-   and the leakage warnings then never see them, with no change to each.
-4. **Remove the columns in pass 3.** Add their column indices to `cols_to_remove` in
-   `_stream_redacted_output`, the path that already removes `CountingGroup` and `PrecinctPortion`.
-   The aggregate row is built at full width (`_build_aggregate_row`), so it must pass through the
-   same removal. With `--rare-contests=blank`, empty those cells in every row (the aggregate
-   row included) instead of removing them.
-5. **Check what ships.** Leave the removed columns out of both `pre_tally` and `post_tally`, so the
+3. **Hide them from everything that reasons about contests.** A new
+   `CvrDatabase.set_aside_contests(names)` takes them out of `contest_names`, `contest_to_columns`
+   and `contest_choice_meta`. Contest balancing (`Aggregate`, `CommonPool`), the near-unanimity
+   check and the leakage warnings then never see them, with no change to each.
+4. **Write them in pass 3.** In `_stream_redacted_output`, empty their cells on every ballot row,
+   visible or redacted (a redacted row gets no `*` there), and write `Redacted` in their columns of
+   the aggregation line, which `_build_aggregate_row` would otherwise fill with sums. If there is no
+   aggregation line, append one with the same identifier fields an aggregation line has, `Redacted`
+   in those columns and 0 in every other vote column, as an aggregation line always has a number in
+   each column it does not redact.
+5. **Check what ships.** Leave the redacted columns out of both `pre_tally` and `post_tally`, so the
    tally check verifies the file that is written rather than passing because both sides still count
-   the removed votes.
-6. **Check mode.** `--check` lists the contests that would be removed and their card counts, and
+   the redacted votes.
+6. **Check mode.** `--check` lists the contests that would be redacted and their card counts, and
    writes nothing. The GUI shows the same in its log.
 7. **The web version.** `anonymize_cvr.html` carries its own JavaScript copy of the algorithm and
    has no automated tests. Port the change, and add a small Node test that runs the same synthetic
@@ -100,11 +96,13 @@ columns itself needs nothing more.
 
 ### Edge cases
 
-- **Ballots left with no contests** after the drop form one style of empty ballots, grouped like any
-  other if there are fewer than `min_ballots` of them.
+- **Ballots left with no contests** once the rare ones are set aside form one style of empty
+  ballots, grouped like any other if there are fewer than `min_ballots` of them.
 - **Multi-card ballots:** counts are of cards, as everywhere else in the tool.
 - **Rows a county has already redacted** (every vote cell blank) carry no contests and are passed
   through, as now.
+- **A contest a county emptied itself** is present on no card, so the tool leaves it alone; running
+  the tool twice gives the same file.
 
 ## Feature B: ballot-type labels too rare to publish
 
@@ -112,9 +110,10 @@ columns itself needs nothing more.
    `rows_by_ballot_type`) and report every label carried by fewer than `min_ballots` ballots, in
    both check and redact modes and in the GUI log. New function:
    `rare_ballot_type_labels(index, min_ballots) -> dict[str, int]`.
-2. **Offer to drop the column.** `--drop-ballottype` removes `BallotType` through the same
-   `cols_to_remove` path. The tool works from fingerprints alone, so nothing else depends on the
-   column. In the GUI, offer it as a checkbox when rare labels are found.
+2. **Offer to drop the column.** `--drop-ballottype` removes `BallotType` through the
+   `cols_to_remove` path that already removes `CountingGroup` and `PrecinctPortion`. The tool works
+   from fingerprints alone, so nothing else depends on the column. In the GUI, offer it as a
+   checkbox when rare labels are found.
 3. **The default is still to decide.** Dropping the column by default is simplest and safest (it is
    an identifier, not vote data), with `--keep-ballottype` for anyone who needs it; or the tool can
    keep it and only report. A named-style column given with `--stylecol` has the same exposure and
@@ -122,13 +121,14 @@ columns itself needs nothing more.
 
 ## Tests (synthetic data only)
 
-- A contest present only on two ballots of a rare style: its columns are removed, the rest of the
-  file adds up, and the aggregate row says nothing about it.
-- A ballot rare only because of the removed contest rejoins a common style and stays visible.
+- A contest present only on two ballots of a rare style: its cells are empty on every row, its
+  aggregation entries say `Redacted`, and the rest of the file adds up.
+- The same contest in a file with no rare ballots otherwise: an aggregation line is added that says
+  `Redacted` in its columns and 0 in every other vote column.
+- A ballot rare only because of the redacted contest rejoins a common style and stays visible.
 - `--keep-rare-contests` reproduces today's output exactly.
-- `--rare-contests=blank` keeps the layout, with every cell of the rare contests empty, and the
-  file adds up without them.
 - `--check` lists the rare contests and writes no file.
+- Running the tool on its own output changes nothing.
 - A rare `BallotType` label on a common fingerprint is reported, and removed with
   `--drop-ballottype`.
 - The Python and web versions produce the same output for every synthetic file.
@@ -139,4 +139,4 @@ columns itself needs nothing more.
 2. Feature B's detection and `--drop-ballottype`, with its tests.
 3. The web version, with the cross-check test.
 4. A pull request, reviewed by the tool's other maintainers.
-5. A release, sent to counties with a note on what changed.
+5. A release, sent to counties with a note on what changed, including how to read `Redacted`.
