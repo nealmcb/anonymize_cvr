@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Set, Tuple
 if TYPE_CHECKING:
     import tkinter as tk
 
-VERSION = "0.3"
+VERSION = "0.4"
 
 MIN_BALLOTS_DEFAULT = 10
 NEAR_UNANIMOUS_THRESHOLD = 2  # "all but N votes" triggers balancing (Rule c)
@@ -2100,7 +2100,7 @@ def _stream_redacted_output(
     pre_tally: List[float] = [0.0] * num_vote_cols
     post_tally: List[float] = [0.0] * num_vote_cols
 
-    # add 'anonymize_cvr-v0.3'
+    # add e.g. 'anonymize_cvr-v0.4'
     ourversion = f"anonymize_cvr-v{VERSION}"
 
     visible_with_rare_contest = 0
