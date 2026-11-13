@@ -114,6 +114,14 @@ such ballots out of the visible tallies for no privacy gain.
    `cols_to_remove` path that already removes `CountingGroup` and `PrecinctPortion`. The tool works
    from fingerprints alone, so nothing else depends on the column. In the GUI, offer it as a
    checkbox when rare labels are found.
+
+   **The warning that goes with it, in the report and the GUI:** dropping the column protects only
+   the CVR. The same label is often printed on the ballot itself (a ballot-style code, a precinct
+   number), so any ballot images the county releases carry it too, and a rare label on an image
+   identifies the ballot just as it would in the CVR. The county must redact the label on those
+   images as well, or better, stop printing a label that a few ballots alone carry. The same holds
+   for a rare contest's ballots under Feature A: an image of the ballot shows the contest and the
+   marks in it.
 3. **The default is still to decide.** Dropping the column by default is simplest and safest (it is
    an identifier, not vote data), with `--keep-ballottype` for anyone who needs it; or the tool can
    keep it and only report. A named-style column given with `--stylecol` has the same exposure and
@@ -129,8 +137,8 @@ such ballots out of the visible tallies for no privacy gain.
 - `--keep-rare-contests` reproduces today's output exactly.
 - `--check` lists the rare contests and writes no file.
 - Running the tool on its own output changes nothing.
-- A rare `BallotType` label on a common fingerprint is reported, and removed with
-  `--drop-ballottype`.
+- A rare `BallotType` label on a common fingerprint is reported, with the warning about ballot
+  images, and removed with `--drop-ballottype`.
 - The Python and web versions produce the same output for every synthetic file.
 
 ## Sequence
