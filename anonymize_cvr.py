@@ -1299,6 +1299,72 @@ def _empty_columns(row: List[str], columns: List[int]) -> List[str]:
     return result
 
 
+def exposed_contests(
+    rare_rows: List[List[str]],
+    aggregate_rows: List[List[str]],
+    db: CvrDatabase,
+    min_ballots: int,
+) -> Dict[str, int]:
+    """
+    Return {contest name: ballots in the aggregate that carry it}, in contest
+    order, for every contest that is on a rare ballot and on fewer than
+    min_ballots of the aggregate's ballots.
+
+    The aggregation line shows such a contest's totals for just those ballots,
+    and the starred rows show which ballots they are.  A contest that only
+    borrowed ballots carry is left out: a borrowed ballot comes from a common
+    style and would otherwise have been published in full.
+    """
+    exposed: Dict[str, int] = {}
+    for name in db.contest_names:
+        if not any(
+            _ballot_has_contest(row, name, db.contest_to_columns) for row in rare_rows
+        ):
+            continue
+        count = sum(
+            1
+            for row in aggregate_rows
+            if _ballot_has_contest(row, name, db.contest_to_columns)
+        )
+        if count < min_ballots:
+            exposed[name] = count
+    return exposed
+
+
+def _warn_exposed_contests(
+    exposed: Dict[str, int], min_ballots: int, no_contest_balancing: bool
+) -> None:
+    """Print the contests exposed_contests() found, and what that exposes."""
+    if not exposed:
+        return
+    print()
+    if no_contest_balancing:
+        print(
+            "  WARNING: --no-contest-balancing was given, so these contests are on "
+            f"too few\n  ballots in the aggregate ({len(exposed)}):"
+        )
+    else:
+        print(
+            "  WARNING: balancing could not find enough ballots, so these contests "
+            f"are on\n  too few ballots in the aggregate ({len(exposed)}):"
+        )
+    for name, count in exposed.items():
+        print(f"    '{name}': {count} ballot(s)")
+    _print_wrapped(
+        "The aggregation line shows each contest's totals for just those ballots, "
+        "and the starred rows show which ballots they are.  A contest on 1 ballot "
+        "reveals that ballot's vote; a contest on a few reveals their votes "
+        "whenever they agree."
+    )
+    if no_contest_balancing:
+        _print_wrapped("Run without --no-contest-balancing to protect them.")
+    else:
+        _print_wrapped(
+            f"Fewer than {min_ballots} ballots that can be borrowed carry these "
+            "contests; consider redacting them by hand."
+        )
+
+
 def _remove_columns(row: List[str], cols_to_remove: List[int]) -> List[str]:
     """Return a copy of row with the specified column indices omitted."""
     remove_set = set(cols_to_remove)
@@ -1827,6 +1893,11 @@ def load_donor_pool(
             redacted_row_indices.add(idx)
 
     aggregate_row = _build_aggregate_row(aggregate.ballots, db, "AGGREGATED")
+    _warn_exposed_contests(
+        exposed_contests(rare_rows, aggregate.ballots, db, min_ballots),
+        min_ballots,
+        no_contest_balancing=False,
+    )
 
     return redacted_row_indices, aggregate_row
 
@@ -1938,6 +2009,11 @@ def collect_rare_rows(
         # Rare ballots already meet the floor; no borrowing.
         redacted_row_indices = {row_to_idx[id(r)] for r in rare_rows}
         aggregate_row = _build_aggregate_row(rare_rows, db, "AGGREGATED")
+        _warn_exposed_contests(
+            exposed_contests(rare_rows, rare_rows, db, min_ballots),
+            min_ballots,
+            no_contest_balancing=True,
+        )
         return redacted_row_indices, aggregate_row
 
     # Borrow to the floor.  Empty rare_contests => Rule a only (no b, no c).
@@ -1980,6 +2056,11 @@ def collect_rare_rows(
         row_to_idx[id(b)] for b in aggregate.ballots if id(b) in row_to_idx
     }
     aggregate_row = _build_aggregate_row(aggregate.ballots, db, "AGGREGATED")
+    _warn_exposed_contests(
+        exposed_contests(rare_rows, aggregate.ballots, db, min_ballots),
+        min_ballots,
+        no_contest_balancing=True,
+    )
     return redacted_row_indices, aggregate_row
 
 
@@ -2777,10 +2858,13 @@ def parse_args() -> argparse.Namespace:
         "--no-contest-balancing",
         action="store_true",
         help=(
-            "Skip the optional balancing steps: do not enforce a per-contest "
-            "ballot minimum and do not balance near-unanimous contests. Common "
-            "ballots are still borrowed as needed to meet the mandatory total "
-            "minimum of --min-ballots per aggregate (required by law)."
+            "Not recommended.  Skip the per-contest minimum and the "
+            "near-unanimity balancing; only the total of --min-ballots ballots "
+            "in the aggregate is enforced.  A contest carried by only a few of "
+            "the rare ballots then has its votes for those ballots shown in the "
+            "aggregation line, and a contest on a single rare ballot has that "
+            "ballot's vote revealed.  The report lists any contests this leaves "
+            "exposed."
         ),
     )
     parser.add_argument(
@@ -3018,7 +3102,10 @@ class CvrAnonymizerApp:
         )
         tk.Checkbutton(
             frame,
-            text="Skip contest balancing (still meets total ballot minimum)",
+            text=(
+                "Skip contest balancing (not recommended)\n"
+                "Can reveal votes in contests that only a few rare ballots carry."
+            ),
             variable=self._no_contest_balancing_var,
             justify=tk.LEFT,
             anchor=tk.W,
