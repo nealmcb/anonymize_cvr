@@ -1978,6 +1978,16 @@ Runs entirely in your browser — no file is uploaded to any server.</p>
         Skip contest balancing (still meets total ballot minimum)
     </label>
     <label>
+        <input type="checkbox" id="keepRareContests">
+        Keep rare contests (not recommended) &mdash; do not redact contests present on fewer
+        than the minimum cards
+    </label>
+    <label>
+        <input type="checkbox" id="dropBallotType">
+        Drop the BallotType column &mdash; ballots with a rare label are otherwise grouped as
+        rare ballots; this drops the label from the CVR instead (not from ballot images)
+    </label>
+    <label>
         Minimum ballots per style:
         <input type="number" id="minBallots" value="10" min="1">
     </label>
@@ -2000,6 +2010,8 @@ const NEAR_UNANIMOUS_THRESHOLD = 2;
 const MIN_CONTRASTING_VOTES = 3;
 const COVERAGE_WEIGHT = 10.0;
 const DONOR_SURPLUS_THRESHOLD = 3;
+const VERSION = '0.3';   // keep in step with VERSION in anonymize_cvr.py
+const OUR_VERSION = 'anonymize_cvr-v' + VERSION;
 
 // ============================================================
 // CSV helpers
@@ -2103,6 +2115,7 @@ function buildDatabase(headerRows) {
 
     return {
         headerlen,
+        numCols: contestsRow.length,
         numVoteCols: contestsRow.length - headerlen,
         ballotTypeIdx,
         precinctPortionIdx,
@@ -2110,6 +2123,9 @@ function buildDatabase(headerRows) {
         contestNames,
         contestToColumns,
         contestChoiceMeta,
+        // Contests too rare to protect, set aside by setAsideContests().
+        setAsideContestNames: [],
+        setAsideColumns: [],
     };
 }
 
@@ -2141,9 +2157,17 @@ function shouldSkipRow(row, db) {
 function makeIndex(styleIdForRow, styleStrings, rowsByPrivacyUnit, rowsByBallotType) {
     return {
         styleIdForRow, styleStrings, rowsByPrivacyUnit, rowsByBallotType,
+        skippedBallotTypeCounts: new Map(),
+        // Ballots made rare by a rare label: row index -> their privacy unit key.
+        labelUnitForRow: new Map(),
+        puKeyForRow(rowIdx, style, precinct) {
+            return this.labelUnitForRow.get(rowIdx) || (style + '|' + precinct);
+        },
+        // Reads this.* (not the arguments) because setAsideRareContests
+        // replaces the style tables.
         styleForRow(rowIdx) {
-            const id = styleIdForRow[rowIdx];
-            return id === null ? null : styleStrings[id];
+            const id = this.styleIdForRow[rowIdx];
+            return id === null ? null : this.styleStrings[id];
         },
         parsePuKey(key) {
             const pipe = key.indexOf('|');
@@ -2167,6 +2191,7 @@ function pass1BuildDbAndIndex(file, redactOnPrecinct, log) {
         const styleTable        = {};
         const rowsByPrivacyUnit = new Map();
         const rowsByBallotType  = new Map();
+        const skippedBallotTypeCounts = new Map();
 
         let fileRowCount = 0;
         let ballotRowIdx = 0;
@@ -2190,6 +2215,11 @@ function pass1BuildDbAndIndex(file, redactOnPrecinct, log) {
 
                 if (shouldSkipRow(row, db)) {
                     styleIdForRow.push(null);
+                    // Rows already redacted still carry their label in the file.
+                    if (db.ballotTypeIdx !== null) {
+                        const bt = (row[db.ballotTypeIdx] || '').trim();
+                        skippedBallotTypeCounts.set(bt, (skippedBallotTypeCounts.get(bt) || 0) + 1);
+                    }
                     return;
                 }
                 // County pre-redacted rows: all vote columns blank.  Nothing to
@@ -2221,14 +2251,151 @@ function pass1BuildDbAndIndex(file, redactOnPrecinct, log) {
                 }
             },
             complete: function() {
-                resolve({ db, headerRows,
-                          index: makeIndex(styleIdForRow, styleStrings,
-                                           rowsByPrivacyUnit, rowsByBallotType) });
+                const index = makeIndex(styleIdForRow, styleStrings,
+                                        rowsByPrivacyUnit, rowsByBallotType);
+                index.skippedBallotTypeCounts = skippedBallotTypeCounts;
+                resolve({ db, headerRows, index });
             },
             error: reject,
         });
     });
 }
+
+// ============================================================
+// Contests and labels too rare to protect (mirror anonymize_cvr.py)
+// ============================================================
+
+// { contest name: number of cards it is present on }, in contest order,
+// computed from the pass-1 style strings with no further read of the file.
+function contestCardCounts(index, db) {
+    const counts = new Map();
+    for (const name of db.contestNames) counts.set(name, 0);
+    for (const [puKey, rowIndices] of index.rowsByPrivacyUnit) {
+        const { style } = index.parsePuKey(puKey);
+        for (let i = 0; i < db.contestNames.length; i++)
+            if (style[i] === '1')
+                counts.set(db.contestNames[i], counts.get(db.contestNames[i]) + rowIndices.length);
+    }
+    return counts;
+}
+
+// Contests present on more than 0 and fewer than minBallots cards: no aggregate
+// can protect them.  Returns a Map { name: card count } in contest order.
+function rareContests(index, db, minBallots) {
+    const result = new Map();
+    for (const [name, count] of contestCardCounts(index, db))
+        if (count > 0 && count < minBallots) result.set(name, count);
+    return result;
+}
+
+// Take the named contests out of db's contest tables, recording them and
+// their columns in db.setAsideContestNames / db.setAsideColumns.
+function setAsideContests(db, names) {
+    for (const name of db.contestNames) {
+        if (!names.has(name)) continue;
+        db.setAsideContestNames.push(name);
+        db.setAsideColumns.push(...db.contestToColumns[name]);
+    }
+    db.setAsideColumns.sort((a, b) => a - b);
+    db.contestNames = db.contestNames.filter(n => !names.has(n));
+    for (const name of names) {
+        delete db.contestToColumns[name];
+        delete db.contestChoiceMeta[name];
+    }
+}
+
+// Recompute the pass-1 styles as if the named contests had never been in the
+// file (drop their positions, merge styles that become identical), then hide
+// them in db.  In memory; the file is not read again.
+function setAsideRareContests(index, db, names) {
+    const keep = [];
+    for (let i = 0; i < db.contestNames.length; i++)
+        if (!names.has(db.contestNames[i])) keep.push(i);
+    const strip = style => keep.map(i => style[i]).join('');
+
+    const newStrings = [], newIdForString = new Map(), newIdForOld = [];
+    for (const oldStyle of index.styleStrings) {
+        const ns = strip(oldStyle);
+        if (!newIdForString.has(ns)) {
+            newIdForString.set(ns, newStrings.length);
+            newStrings.push(ns);
+        }
+        newIdForOld.push(newIdForString.get(ns));
+    }
+    index.styleIdForRow = index.styleIdForRow.map(id => id === null ? null : newIdForOld[id]);
+
+    const merged = new Map();
+    for (const [puKey, rowIndices] of index.rowsByPrivacyUnit) {
+        const { style, precinct } = index.parsePuKey(puKey);
+        const key = strip(style) + '|' + precinct;
+        if (!merged.has(key)) merged.set(key, []);
+        merged.get(key).push(...rowIndices);
+    }
+    for (const rows of merged.values()) rows.sort((a, b) => a - b);
+
+    index.styleStrings = newStrings;
+    index.rowsByPrivacyUnit = merged;
+    setAsideContests(db, names);
+}
+
+// { label: ballot count } for every non-empty label carried by fewer than
+// minBallots ballots, at least one of them with visible votes, sorted by label.
+// The count includes rows already redacted, which still carry the label.
+function rareLabels(rowsByLabel, skippedCounts, minBallots) {
+    const result = new Map();
+    for (const label of [...rowsByLabel.keys()].sort()) {
+        const rows = rowsByLabel.get(label);
+        const n = rows.length + (skippedCounts.get(label) || 0);
+        if (label && rows.length > 0 && n < minBallots) result.set(label, n);
+    }
+    return result;
+}
+
+// Separates the precinct from a rare label in a privacy-unit key.
+const LABEL_UNIT_SEP = '\u0000';
+
+// Move every ballot carrying a rare label into a privacy unit of its own
+// (style, precinct and label), so it is rare and is grouped into the aggregate.
+// What remains of a unit stays in it.  Mirrors make_rare_label_rows_rare().
+function makeRareLabelRowsRare(index, description, labels, rowsByLabel) {
+    const tagForRow = new Map();
+    for (const label of labels.keys())
+        for (const rowIdx of rowsByLabel.get(label) || [])
+            if (!tagForRow.has(rowIdx)) tagForRow.set(rowIdx, description + " '" + label + "'");
+    if (tagForRow.size === 0) return 0;
+
+    const remaining = new Map(), moved = new Map();
+    for (const [puKey, rowIndices] of index.rowsByPrivacyUnit) {
+        const keep = [];
+        for (const rowIdx of rowIndices) {
+            const tag = tagForRow.get(rowIdx);
+            if (tag === undefined) { keep.push(rowIdx); continue; }
+            const key = puKey + LABEL_UNIT_SEP + tag;
+            if (!moved.has(key)) moved.set(key, []);
+            moved.get(key).push(rowIdx);
+            index.labelUnitForRow.set(rowIdx, key);
+        }
+        if (keep.length > 0) remaining.set(puKey, keep);
+    }
+    for (const [k, v] of moved) remaining.set(k, v);
+    index.rowsByPrivacyUnit = remaining;
+    return tagForRow.size;
+}
+
+// Follows "Dropping the column protects only the CVR." or "Grouping these
+// ballots protects only the CVR.", whichever remedy applies.
+const IMAGE_WARNING_LABELS =
+    'The same label is often printed ' +
+    'on the ballot itself (a ballot-style code, a precinct number), so any ballot ' +
+    'images the county releases carry it too, and a rare label on an image ' +
+    'identifies the ballot just as it would in the CVR.  The county must redact ' +
+    'the label on those images as well, or better, stop printing a label that a ' +
+    'few ballots alone carry.';
+
+const IMAGE_WARNING_CONTESTS =
+    'This protects only the CVR.  An image of one of these ballots shows the ' +
+    'contest and the marks in it; the county must redact the contest on any ' +
+    'ballot images it releases as well.';
 
 // ============================================================
 // checkRedactionNeeds
@@ -2261,7 +2428,15 @@ function checkRedactionNeeds(index, db, minBallots) {
         }
     }
 
-    return { rarePairs, leakageWarnings, needsRedaction: () => rarePairs.size > 0 };
+    return {
+        rarePairs, leakageWarnings,
+        rareContests: new Map(),   // filled in by the caller (Feature A)
+        needsAggregate() { return rarePairs.size > 0; },
+        rareLabels: new Map(),     // filled in by the caller (Feature B)
+        needsRedaction() {
+            return rarePairs.size > 0 || this.rareContests.size > 0 || this.rareLabels.size > 0;
+        },
+    };
 }
 
 // ============================================================
@@ -2488,11 +2663,31 @@ function buildAggregateRow(ballots, db, aggregateId) {
     return result;
 }
 
+// '*' replaces every non-empty vote cell; empty cells stay empty, as in
+// anonymize_cvr.py.
 function redactBallotRow(row, db, redactOnPrecinct) {
     const r = [...row];
     if (db.countingGroupIdx !== null) r[db.countingGroupIdx] = '';
     if (!redactOnPrecinct && db.precinctPortionIdx !== null) r[db.precinctPortionIdx] = '';
-    for (let i = db.headerlen; i < r.length; i++) r[i] = '*';
+    for (let i = db.headerlen; i < r.length; i++) if (row[i] !== '') r[i] = '*';
+    return r;
+}
+
+// The aggregation line for a file that needs one only to mark set-aside
+// contests "Redacted": the identifier fields an aggregation line has, and 0 in
+// every vote column.  It stands for no ballots.
+function addedAggregateRow(db) {
+    const result = new Array(db.headerlen).fill('');
+    result[0] = 'AGGREGATED';
+    if (db.ballotTypeIdx !== null) result[db.ballotTypeIdx] = 'AGGREGATED';
+    for (let i = db.headerlen; i < db.numCols; i++) result.push('0');
+    return result;
+}
+
+function emptyColumns(row, cols) {
+    if (cols.length === 0) return row;
+    const r = [...row];
+    for (const c of cols) r[c] = '';
     return r;
 }
 
@@ -2503,10 +2698,11 @@ function blankGeographicFields(row, db, redactOnPrecinct) {
     return r;
 }
 
-function addToTally(tally, row, headerlen) {
+function addToTally(tally, row, headerlen, skipCols) {
     for (let i = 0; i < tally.length; i++) {
         const colIdx = headerlen + i;
         if (colIdx >= row.length) continue;
+        if (skipCols && skipCols.has(colIdx)) continue;
         const p = parseFloat((row[colIdx] || '').trim());
         if (!isNaN(p)) tally[i] += p;
     }
@@ -2676,7 +2872,7 @@ function pass2CollectRareRows(file, db, index, needs, redactOnPrecinct, minBallo
 
                 const precinct = (redactOnPrecinct && db.precinctPortionIdx !== null)
                     ? (row[db.precinctPortionIdx] || '').trim() : '';
-                const puKey = rowStyle + '|' + precinct;
+                const puKey = index.puKeyForRow(currentIdx, rowStyle, precinct);
 
                 if (needs.rarePairs.has(puKey)) {
                     rareRows.push({ rowIdx: currentIdx, row });
@@ -2805,7 +3001,7 @@ function pass2LoadAndBuild(file, db, index, needs, minBallots, redactOnPrecinct,
 
                 const precinct = (redactOnPrecinct && db.precinctPortionIdx !== null)
                     ? (row[db.precinctPortionIdx] || '').trim() : '';
-                const puKey = rowStyle + '|' + precinct;
+                const puKey = index.puKeyForRow(currentIdx, rowStyle, precinct);
 
                 if (needs.rarePairs.has(puKey)) {
                     rareRows.push({ rowIdx: currentIdx, row }); return;
@@ -2918,13 +3114,27 @@ function pass2LoadAndBuild(file, db, index, needs, minBallots, redactOnPrecinct,
 // Pass 3: stream the file and write output directly to
 // a FileSystemWritableFileStream, one row at a time.
 // No output accumulates in memory.
+//
+// The set-aside contests (db.setAsideColumns) are emptied on every ballot
+// row, visible or redacted, and say "Redacted" in the aggregation line; if
+// there is no aggregation line, one standing for no ballots is added.  The
+// tally check leaves their columns out, so it checks what ships.
 // ============================================================
 async function pass3WriteToFile(file, db, headerRows, redactedRowIndices,
-                                aggregateRow, redactOnPrecinct, writable, log) {
+                                aggregateRow, redactOnPrecinct, writable, log,
+                                dropBallotType) {
     const colsToRemove = new Set();
     if (db.countingGroupIdx   !== null) colsToRemove.add(db.countingGroupIdx);
     if (!redactOnPrecinct && db.precinctPortionIdx !== null)
         colsToRemove.add(db.precinctPortionIdx);
+    if (dropBallotType && db.ballotTypeIdx !== null) colsToRemove.add(db.ballotTypeIdx);
+
+    const blankCols = db.setAsideColumns;
+    const skipCols  = new Set(blankCols);
+    if (blankCols.length > 0) {
+        aggregateRow = aggregateRow === null ? addedAggregateRow(db) : [...aggregateRow];
+        for (const c of blankCols) aggregateRow[c] = 'Redacted';
+    }
 
     const preTally  = new Array(db.numVoteCols).fill(0);
     const postTally = new Array(db.numVoteCols).fill(0);
@@ -2939,16 +3149,37 @@ async function pass3WriteToFile(file, db, headerRows, redactedRowIndices,
         buf.push(serializeRow(removeColumns(row, colsToRemove)) + '\r\n');
     }
 
-    // Write the four header rows (already in memory from Pass 1).
-    for (const row of headerRows) writeLine(row);
+    // Write the four header rows (already in memory from Pass 1).  The first
+    // gets this tool's version in its first empty cell, as anonymize_cvr.py does.
+    const firstRow = removeColumns(headerRows[0], colsToRemove);
+    const blankAt = firstRow.indexOf('');
+    if (blankAt !== -1) firstRow[blankAt] = OUR_VERSION;
+    else if (firstRow.length < db.numCols - colsToRemove.size) firstRow.push(OUR_VERSION);
+    buf.push(serializeRow(firstRow) + '\r\n');
+    for (const row of headerRows.slice(1)) writeLine(row);
     await flush();
+
+    let ballotRowIdx = 0;   // non-empty ballot rows seen
+    function writeBallotRow(row) {
+        const currentIdx = ballotRowIdx++;
+        if (ballotRowIdx % 100000 === 0)
+            log('  ' + ballotRowIdx.toLocaleString() + ' rows written (pass 3)...');
+        addToTally(preTally, row, db.headerlen, skipCols);
+        // Empty the set-aside contests first, so a redacted row gets no '*' there.
+        row = emptyColumns(row, blankCols);
+        if (redactedRowIndices.has(currentIdx)) {
+            writeLine(redactBallotRow(row, db, redactOnPrecinct));
+        } else {
+            writeLine(blankGeographicFields(row, db, redactOnPrecinct));
+            addToTally(postTally, row, db.headerlen, skipCols);
+        }
+    }
 
     // Stream the file for ballot rows.
     const reader  = file.stream().getReader();
     const decoder = new TextDecoder();
     let lineBuffer   = '';
     let fileLineCount = 0;   // non-empty lines seen (headers + ballot rows)
-    let ballotRowIdx  = 0;   // non-empty ballot rows seen
 
     while (true) {
         const { done, value } = await reader.read();
@@ -2965,39 +3196,24 @@ async function pass3WriteToFile(file, db, headerRows, redactedRowIndices,
 
             const row = parseCsvRow(line);
             if (isEmptyRow(row)) continue;   // county pre-redacted/EOF artifact rows
-
-            const currentIdx = ballotRowIdx++;
-            if (ballotRowIdx % 100000 === 0)
-                log('  ' + ballotRowIdx.toLocaleString() + ' rows written (pass 3)...');
-            addToTally(preTally, row, db.headerlen);
-
-            if (redactedRowIndices.has(currentIdx)) {
-                writeLine(redactBallotRow(row, db, redactOnPrecinct));
-            } else {
-                writeLine(blankGeographicFields(row, db, redactOnPrecinct));
-                addToTally(postTally, row, db.headerlen);
-            }
+            writeBallotRow(row);
 
             if (buf.length >= FLUSH_ROWS) await flush();
         }
         if (done) break;
     }
 
-    // Handle any remaining content (last line with no trailing newline).
+    // Handle any remaining content (last line with no trailing newline).  It
+    // goes through the same redaction as every other ballot row.
     if (lineBuffer.trim() !== '') {
-        const row = parseCsvRow(lineBuffer);
-        if (!isEmptyRow(row)) {
-            const currentIdx = ballotRowIdx++;
-            addToTally(preTally, row, db.headerlen);
-            writeLine(blankGeographicFields(row, db, redactOnPrecinct));
-            addToTally(postTally, row, db.headerlen);
-        }
+        const row = parseCsvRow(lineBuffer.replace(/\r$/, ''));
+        if (!isEmptyRow(row)) writeBallotRow(row);
     }
 
     // Append the aggregate row and verify tallies.
     if (aggregateRow !== null) {
         writeLine(aggregateRow);
-        addToTally(postTally, aggregateRow, db.headerlen);
+        addToTally(postTally, aggregateRow, db.headerlen, skipCols);
     }
     await flush();
     await writable.close();
@@ -3014,9 +3230,141 @@ async function pass3WriteToFile(file, db, headerRows, redactedRowIndices,
 }
 
 // ============================================================
+// Reports for contests and labels too rare to protect
+// ============================================================
+function reportRareContests(rare, minBallots, keepRareContests, log) {
+    if (rare.size === 0) return;
+    log('  Contests present on fewer than ' + minBallots + ' cards (' + rare.size +
+        '); grouping ballots cannot protect them:');
+    for (const [name, count] of rare) log("    '" + name + "': " + count + ' card(s)');
+    if (keepRareContests) {
+        log('  WARNING: "Keep rare contests" is set, so these contests are NOT redacted;');
+        log('  their votes pass through the aggregation line.');
+    } else {
+        log('  These contests are redacted: their columns stay in the file, every cell in ' +
+            'them is emptied on every ballot row, and the aggregation line says "Redacted" in them.');
+        log('  ' + IMAGE_WARNING_CONTESTS);
+    }
+    log('');
+}
+
+function reportRareLabels(labels, minBallots, dropBallotType, log) {
+    if (labels.size === 0) return;
+    log('  WARNING: BallotType labels carried by fewer than ' + minBallots +
+        ' ballots (' + labels.size + '):');
+    for (const [label, count] of labels) log("    '" + label + "': " + count + ' ballot(s)');
+    log('  A label this rare picks out the ballots that carry it, even when their ' +
+        'contest pattern is common.');
+    if (dropBallotType) {
+        log('  The BallotType column is dropped from the output ("Drop the BallotType ' +
+            'column"); these ballots are not grouped on account of the label.');
+        log('  Dropping the column protects only the CVR.  ' + IMAGE_WARNING_LABELS);
+    } else {
+        log('  These ballots are treated as rare: grouped into the aggregate, with their ' +
+            'votes starred.  The BallotType column stays; "Drop the BallotType column" ' +
+            'drops it instead.');
+        log('  Grouping these ballots protects only the CVR.  ' + IMAGE_WARNING_LABELS);
+    }
+    log('');
+}
+
+// ============================================================
+// runAnonymizer — the whole run, without the page.  Used by the Run button
+// and by tests/web_matches_python.js.
+//
+// options: { minBallots, redactOnPrecinct, noContestBalancing,
+//            keepRareContests, dropBallotType }
+// writable: a FileSystemWritableFileStream (write/close/abort).
+// Returns true if an output was written, false if none was needed (the
+// writable is then aborted).
+// ============================================================
+async function runAnonymizer(file, options, writable, log) {
+    const { minBallots, redactOnPrecinct, noContestBalancing,
+            keepRareContests, dropBallotType } = options;
+
+    log('*** Pass 1: Looking for rare ballot styles.\n');
+    const { db, headerRows, index } =
+        await pass1BuildDbAndIndex(file, redactOnPrecinct, log);
+
+    // Contests too rare to protect are set aside before rare-ballot detection.
+    let rare = rareContests(index, db, minBallots);
+    reportRareContests(rare, minBallots, keepRareContests, log);
+    if (keepRareContests) rare = new Map();
+    if (rare.size > 0) setAsideRareContests(index, db, new Set(rare.keys()));
+
+    // Ballots carrying a rare label are made rare, unless the column is dropped.
+    const rareBallotTypes = rareLabels(index.rowsByBallotType, index.skippedBallotTypeCounts,
+                                       minBallots);
+    reportRareLabels(rareBallotTypes, minBallots, dropBallotType, log);
+    if (!dropBallotType)
+        makeRareLabelRowsRare(index, 'BallotType', rareBallotTypes, index.rowsByBallotType);
+
+    log('  ' + index.styleStrings.length + ' distinct ballot styles found.');
+
+    const needs = checkRedactionNeeds(index, db, minBallots);
+    needs.rareContests = rare;
+    needs.rareLabels = rareBallotTypes;
+    for (const w of needs.leakageWarnings) log('WARNING: ' + w);
+
+    if (needs.rarePairs.size > 0) {
+        const total = redactOnPrecinct ? index.rowsByPrivacyUnit.size : index.styleStrings.length;
+        const label = redactOnPrecinct ? 'Rare ballot style/precinct combinations'
+                                       : 'Rare ballot styles';
+        log('\n  ' + label + ' (' + needs.rarePairs.size + ' of ' + total + ' total):');
+        for (const [puKey, count] of [...needs.rarePairs.entries()].sort((a, b) => a[1] - b[1])) {
+            const { style, precinct } = index.parsePuKey(puKey);
+            const sep = precinct.indexOf(LABEL_UNIT_SEP);
+            const rareLabel = sep === -1 ? '' : 'rare ' + precinct.substring(sep + 1) + ', ';
+            log('    ' + count + ' ballot(s)  [' + rareLabel + 'style #' +
+                index.styleStrings.indexOf(style) + ']');
+        }
+    }
+
+    log(needs.needsRedaction() ? '\nRedaction is needed.' : '\nNo redaction needed.');
+
+    const dropsAColumn = dropBallotType && db.ballotTypeIdx !== null;
+    if (!needs.needsRedaction() && !dropsAColumn) {
+        await writable.abort();
+        log('\nDone. (No output written.)');
+        return false;
+    }
+
+    let redactedRowIndices = new Set(), aggregateRow = null;
+    if (needs.needsAggregate()) {
+        log('\n*** Pass 2: Building the aggregate row.\n');
+        if (noContestBalancing) {
+            ({ redactedRowIndices, aggregateRow } = await pass2CollectRareRows(
+                file, db, index, needs, redactOnPrecinct, minBallots, log));
+        } else {
+            ({ redactedRowIndices, aggregateRow } = await pass2LoadAndBuild(
+                file, db, index, needs, minBallots, redactOnPrecinct, log));
+        }
+
+        const rareCount = [...needs.rarePairs.keys()].reduce(
+            (s, k) => s + (index.rowsByPrivacyUnit.get(k) || []).length, 0);
+        const borrowedCount = redactedRowIndices.size - rareCount;
+        log('\n*** Pass 2 complete.');
+        log('  Ballots from rare styles/precincts: ' + rareCount);
+        if (borrowedCount > 0) log('  Ballots borrowed from common styles: ' + borrowedCount);
+        log('  Total ballots in aggregate: ' + redactedRowIndices.size);
+    } else if (rare.size > 0) {
+        log('\n*** No ballot styles are rare; pass 2 is not needed.');
+        log('  An aggregation line standing for no ballots will be added to mark the redacted contests.');
+    }
+
+    log('\n*** Pass 3: Writing output.');
+    await pass3WriteToFile(
+        file, db, headerRows, redactedRowIndices, aggregateRow,
+        redactOnPrecinct, writable, log, dropBallotType);
+    return true;
+}
+
+// ============================================================
 // UI
 // ============================================================
 let selectedFile = null;
+
+if (typeof document !== 'undefined' && document.getElementById('fileInput')) {
 
 document.getElementById('fileInput').addEventListener('change', function(e) {
     selectedFile = e.target.files[0] || null;
@@ -3048,9 +3396,13 @@ document.getElementById('runBtn').addEventListener('click', async function() {
         throw e;
     }
 
-    const minBallots          = parseInt(document.getElementById('minBallots').value) || MIN_BALLOTS_DEFAULT;
-    const redactOnPrecinct    = document.getElementById('redactOnPrecinct').checked;
-    const noContestBalancing  = document.getElementById('noContestBalancing').checked;
+    const options = {
+        minBallots:         parseInt(document.getElementById('minBallots').value) || MIN_BALLOTS_DEFAULT,
+        redactOnPrecinct:   document.getElementById('redactOnPrecinct').checked,
+        noContestBalancing: document.getElementById('noContestBalancing').checked,
+        keepRareContests:   document.getElementById('keepRareContests').checked,
+        dropBallotType:     document.getElementById('dropBallotType').checked,
+    };
 
     const statusEl = document.getElementById('status');
     statusEl.textContent = '';
@@ -3066,61 +3418,12 @@ document.getElementById('runBtn').addEventListener('click', async function() {
 
     try {
         writable = await fileHandle.createWritable();
-
-        log('*** Pass 1: Looking for rare ballot styles.\n');
-        const { db, headerRows, index } =
-            await pass1BuildDbAndIndex(selectedFile, redactOnPrecinct, log);
-        log('  ' + index.styleStrings.length + ' distinct ballot styles found.');
-
-        const needs = checkRedactionNeeds(index, db, minBallots);
-        for (const w of needs.leakageWarnings) log('WARNING: ' + w);
-
-        if (needs.rarePairs.size > 0) {
-            const total = redactOnPrecinct ? index.rowsByPrivacyUnit.size : index.styleStrings.length;
-            const label = redactOnPrecinct ? 'Rare ballot style/precinct combinations'
-                                           : 'Rare ballot styles';
-            log('\n  ' + label + ' (' + needs.rarePairs.size + ' of ' + total + ' total):');
-            for (const [puKey, count] of [...needs.rarePairs.entries()].sort((a, b) => a[1] - b[1])) {
-                const { style } = index.parsePuKey(puKey);
-                log('    ' + count + ' ballot(s)  [style #' + index.styleStrings.indexOf(style) + ']');
-            }
-        }
-
-        log(needs.needsRedaction() ? '\nRedaction is needed.' : '\nNo redaction needed.');
-
-        if (!needs.needsRedaction()) {
-            await writable.abort();
-            writable = null;
-            log('\nDone. (No output written.)');
-        } else {
-            log('\n*** Pass 2: Building the aggregate row.\n');
-            let redactedRowIndices, aggregateRow;
-            if (noContestBalancing) {
-                ({ redactedRowIndices, aggregateRow } = await pass2CollectRareRows(
-                    selectedFile, db, index, needs, redactOnPrecinct, minBallots, log));
-            } else {
-                ({ redactedRowIndices, aggregateRow } = await pass2LoadAndBuild(
-                    selectedFile, db, index, needs, minBallots, redactOnPrecinct, log));
-            }
-
-            const rareCount = [...needs.rarePairs.keys()].reduce(
-                (s, k) => s + (index.rowsByPrivacyUnit.get(k) || []).length, 0);
-            const borrowedCount = redactedRowIndices.size - rareCount;
-            log('\n*** Pass 2 complete.');
-            log('  Ballots from rare styles/precincts: ' + rareCount);
-            if (borrowedCount > 0) log('  Ballots borrowed from common styles: ' + borrowedCount);
-            log('  Total ballots in aggregate: ' + redactedRowIndices.size);
-
-            log('\n*** Pass 3: Writing output.');
-            await pass3WriteToFile(
-                selectedFile, db, headerRows,
-                redactedRowIndices, aggregateRow, redactOnPrecinct, writable, log);
-            writable = null;   // pass3WriteToFile closed it
-
+        const wrote = await runAnonymizer(selectedFile, options, writable, log);
+        writable = null;   // runAnonymizer closed or aborted it
+        if (wrote) {
             log('  Output written to ' + fileHandle.name + '.');
             log('\nDone.');
         }
-
     } catch (err) {
         log('\nError: ' + err.message);
         console.error(err);
@@ -3129,6 +3432,8 @@ document.getElementById('runBtn').addEventListener('click', async function() {
         this.disabled = false;
     }
 });
+
+}
 </script>
 </body>
 </html>

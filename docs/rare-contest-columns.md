@@ -6,8 +6,8 @@ county preparing its CVR by hand before running it.
 - **Feature A** redacts any contest that appears on fewer than `min_ballots` cards in the whole
   file: its cells are emptied on every ballot row, and its columns in the aggregation line say
   `Redacted`.
-- **Feature B** detects `BallotType` labels carried by fewer than `min_ballots` ballots, reports
-  them, and can drop the column.
+- **Feature B** treats a ballot whose `BallotType` label is carried by fewer than `min_ballots`
+  ballots as rare, so it is grouped like any rare ballot; or, on request, drops the column instead.
 
 ## The problem
 
@@ -109,23 +109,31 @@ such ballots out of the visible tallies for no privacy gain.
 1. **Always detect and report.** Count ballots per `BallotType` value (pass 1 already builds
    `rows_by_ballot_type`) and report every label carried by fewer than `min_ballots` ballots, in
    both check and redact modes and in the GUI log. New function:
-   `rare_ballot_type_labels(index, min_ballots) -> dict[str, int]`.
-2. **Offer to drop the column.** `--drop-ballottype` removes `BallotType` through the
-   `cols_to_remove` path that already removes `CountingGroup` and `PrecinctPortion`. The tool works
-   from fingerprints alone, so nothing else depends on the column. In the GUI, offer it as a
-   checkbox when rare labels are found.
-
-   **The warning that goes with it, in the report and the GUI:** dropping the column protects only
-   the CVR. The same label is often printed on the ballot itself (a ballot-style code, a precinct
+   `rare_ballot_type_labels(index, min_ballots) -> dict[str, int]`. The count includes rows already
+   redacted, which still carry the label; a label left only on redacted rows exposes no votes and is
+   not reported. A rare label means redaction is needed, and the report says which remedy applies.
+2. **By default, make those ballots rare.** After the rare contests are set aside, each ballot that
+   carries a rare label moves into a privacy unit of its own (its style, its precinct and the
+   label). Such a unit has fewer than `min_ballots` ballots, so the ballot is grouped into the
+   aggregate like any rare ballot, contest balancing included, and its votes are starred. The label
+   column stays. What remains of the ballot's old unit stays in it, and is rare in turn if it now
+   has fewer than `min_ballots` ballots. Pass 2 finds a row's unit through
+   `RowIndex.label_unit_for_row`, so no other code changes.
+3. **Or drop the column.** `--drop-ballottype` removes `BallotType` through the `cols_to_remove`
+   path that already removes `CountingGroup` and `PrecinctPortion`, and the ballots are then not
+   made rare on account of the label: with the label gone, a ballot on a common style stays
+   visible. The tool works from fingerprints alone, so nothing else depends on the column. The GUI
+   and the web page offer it as a checkbox.
+4. **The warning that goes with either remedy, in the report and the GUI:** it protects only the
+   CVR. The same label is often printed on the ballot itself (a ballot-style code, a precinct
    number), so any ballot images the county releases carry it too, and a rare label on an image
    identifies the ballot just as it would in the CVR. The county must redact the label on those
    images as well, or better, stop printing a label that a few ballots alone carry. The same holds
    for a rare contest's ballots under Feature A: an image of the ballot shows the contest and the
    marks in it.
-3. **The default is still to decide.** Dropping the column by default is simplest and safest (it is
-   an identifier, not vote data), with `--keep-ballottype` for anyone who needs it; or the tool can
-   keep it and only report. A named-style column given with `--stylecol` has the same exposure and
-   gets the same treatment.
+5. **Named styles.** A named-style column given with `--stylecol` has the same exposure and gets the
+   same treatment: its rare labels make their ballots rare, and `--drop-ballottype` drops it along
+   with `BallotType`.
 
 ## Tests (synthetic data only)
 
@@ -138,7 +146,9 @@ such ballots out of the visible tallies for no privacy gain.
 - `--check` lists the rare contests and writes no file.
 - Running the tool on its own output changes nothing.
 - A rare `BallotType` label on a common fingerprint is reported, with the warning about ballot
-  images, and removed with `--drop-ballottype`.
+  images, and `--check` says redaction is needed.
+- By default the ballots with that label are aggregated and their votes starred, and the column
+  stays; with `--drop-ballottype` the column is gone and those ballots stay visible.
 - The Python and web versions produce the same output for every synthetic file.
 
 ## Sequence
