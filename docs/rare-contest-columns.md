@@ -65,6 +65,11 @@ carried a redacted contest then joins a common style and stays visible; one that
 its remaining contests is grouped as usual. Detecting first and redacting only at output would pull
 such ballots out of the visible tallies for no privacy gain.
 
+**Ballot images.** A visible ballot that carried a redacted contest shows nothing of it in the CVR,
+but an image of that ballot shows the contest and the marks in it. The tool counts these ballots in
+its report, and `--redacted-list` lists them along with the redacted ballots, so a county that
+redacts the images on the list covers them too.
+
 ### Implementation
 
 1. **Count each contest's cards in pass 1, with no extra read of the file.** `build_row_index`
@@ -142,6 +147,7 @@ such ballots out of the visible tallies for no privacy gain.
 - The same contest in a file with no rare ballots otherwise: an aggregation line is added that says
   `Redacted` in its columns and 0 in every other vote column.
 - A ballot rare only because of the redacted contest rejoins a common style and stays visible.
+- `--redacted-list` includes the visible ballots that carried a redacted contest.
 - `--keep-rare-contests` reproduces today's output exactly.
 - `--check` lists the rare contests and writes no file.
 - Running the tool on its own output changes nothing.

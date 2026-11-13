@@ -2049,10 +2049,11 @@ def _stream_redacted_output(
     redact_on_precinct: bool,
     redacted_list_file: Optional[str],
     drop_ballottype: bool = False,
-) -> None:
+) -> int:
     """
     Pass 3: stream input to output, redacting rows in redacted_row_indices,
     appending the aggregate row (if any), and verifying vote tallies match.
+    Return the number of visible ballots that carried a set-aside contest.
 
     The set-aside contests (db.set_aside_columns) are emptied on every ballot
     row, visible or redacted, and say "Redacted" in the aggregation line.  If
@@ -2063,6 +2064,11 @@ def _stream_redacted_output(
     post_tally — running sum of vote columns for non-redacted rows, plus the
                  aggregate row.  Must equal pre_tally if redaction is correct.
     Both leave out the set-aside columns, so the check is of what ships.
+
+    The redacted list gets the ImprintedId of every redacted ballot, and of
+    every visible ballot that carried a set-aside contest: its row shows
+    nothing of that contest, but an image of the ballot shows the contest and
+    the marks in it.
     """
     # Columns that carry no information in the output and should be omitted entirely.
     # CountingGroup is always removed.  PrecinctPortion is removed when not redacting
@@ -2097,6 +2103,8 @@ def _stream_redacted_output(
     # add 'anonymize_cvr-v0.3'
     ourversion = f"anonymize_cvr-v{VERSION}"
 
+    visible_with_rare_contest = 0
+
     tmp_output: Optional[str] = None
     tmp_list: Optional[str] = None
     try:
@@ -2130,6 +2138,10 @@ def _stream_redacted_output(
                         if row_idx > 0 and row_idx % 100000 == 0:
                             print(f"  {row_idx:,} rows written...", flush=True)
                         _add_to_tally(pre_tally, row, db.headerlen, skip_cols)
+                        carried_rare_contest = any(
+                            col_idx < len(row) and row[col_idx].strip()
+                            for col_idx in blank_cols
+                        )
                         # Empty the set-aside contests first, so a redacted
                         # row gets no '*' in their columns.
                         row = _empty_columns(row, blank_cols)
@@ -2143,6 +2155,10 @@ def _stream_redacted_output(
                                 )
                             )
                         else:
+                            if carried_rare_contest:
+                                visible_with_rare_contest += 1
+                                if list_out is not None and len(row) > 4:
+                                    list_out.write(row[4] + "\n")
                             out_row = _blank_geographic_fields(
                                 row, db, redact_on_precinct
                             )
@@ -2176,6 +2192,7 @@ def _stream_redacted_output(
         os.replace(tmp_output, output_file)
         if tmp_list is not None and redacted_list_file is not None:
             os.replace(tmp_list, redacted_list_file)
+        return visible_with_rare_contest
     except BaseException:
         for leftover in (tmp_output, tmp_list):
             if leftover is not None:
@@ -2239,7 +2256,7 @@ def perform_redaction(
             )
 
         print("\n*** Pass 3: Writing output.")
-        _stream_redacted_output(
+        visible_with_rare_contest = _stream_redacted_output(
             csv_path,
             db,
             output_file,
@@ -2252,6 +2269,17 @@ def perform_redaction(
         print(f"  Output written to {output_file}.")
         if redacted_list_file is not None:
             print(f"  Redacted ballot list written to {redacted_list_file}.")
+        if visible_with_rare_contest:
+            _print_wrapped(
+                f"{visible_with_rare_contest} ballot(s) carried a redacted contest "
+                "and stay visible in the CVR, with that contest emptied.  Their "
+                "images still show the contest and the marks in it, so they need "
+                "redacting on any ballot images released."
+            )
+            if redacted_list_file is not None:
+                print("  They are in the redacted ballot list too.")
+            else:
+                print("  --redacted-list lists them with the redacted ballots.")
 
 
 # ---------------------------------------------------------------------------
@@ -2791,8 +2819,9 @@ def parse_args() -> argparse.Namespace:
         metavar="FILENAME",
         default=None,
         help=(
-            "Write the ImprintedId of every redacted ballot to FILENAME, "
-            "one per line.  Useful for identifying ballot images that also need redaction."
+            "Write to FILENAME, one per line, the ImprintedId of every redacted "
+            "ballot and of every visible ballot that carried a redacted contest.  "
+            "These are the ballots whose images also need redaction."
         ),
     )
     args = parser.parse_args()

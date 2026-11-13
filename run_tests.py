@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 GENERATED_DIR = "testCases/generated"
 OUTPUT_DIR = "/tmp/anonymize_test_outputs"
@@ -228,6 +228,26 @@ def _no_leftovers(*paths: str) -> List[str]:
             failures.append(f"  file should not exist after a failed run: {path}")
     for leftover in glob.glob(f"{OUTPUT_DIR}/*.part"):
         failures.append(f"  temporary file left behind: {leftover}")
+    return failures
+
+
+def _list_holds(
+    path: str, exactly: Optional[List[str]] = None, includes: Sequence[str] = ()
+) -> List[str]:
+    """
+    Return failures unless the --redacted-list file at path holds exactly the
+    ImprintedIds given (in any order), or at least those in includes.
+    """
+    if not os.path.exists(path):
+        return [f"  redacted list was not written: {path}"]
+    with open(path, encoding="utf-8") as f:
+        listed = [line.strip() for line in f if line.strip()]
+    failures = []
+    if exactly is not None and sorted(listed) != sorted(exactly):
+        failures.append(f"  redacted list holds {listed}, expected {exactly}")
+    for imprinted_id in includes:
+        if imprinted_id not in listed:
+            failures.append(f"  redacted list lacks {imprinted_id}")
     return failures
 
 
@@ -737,6 +757,66 @@ def _make_command_tests() -> List[CommandTest]:
             ],
             expected=["No redaction needed."],
             unexpected=["Traceback", "Contests present on fewer than"],
+        ),
+        CommandTest(
+            # Ballots 46-47 are grouped; 48-50 stay visible but carried Fringe
+            # District, which their images still show.  The list has them all.
+            name="redacted_list_has_visible_rare_contest_ballots",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--force",
+                f"{GENERATED_DIR}/rare_contest.csv",
+                f"{OUTPUT_DIR}/rare_contest_listed.csv",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/rare_contest_listed.txt",
+            ],
+            expected=[
+                "3 ballot(s) carried a redacted contest",
+                "They are in the redacted ballot list too.",
+            ],
+            unexpected=["Traceback"],
+            after=lambda: _list_holds(
+                f"{OUTPUT_DIR}/rare_contest_listed.txt",
+                includes=["1-1-46", "1-1-47", "1-1-48", "1-1-49", "1-1-50"],
+            ),
+        ),
+        CommandTest(
+            # No ballot is redacted here, so the list is only the three visible
+            # ballots that carried Fringe District.
+            name="redacted_list_only_visible_rare_contest_ballots",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--force",
+                f"{GENERATED_DIR}/rare_contest_only.csv",
+                f"{OUTPUT_DIR}/rare_contest_only_listed.csv",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/rare_contest_only_listed.txt",
+            ],
+            expected=["3 ballot(s) carried a redacted contest"],
+            unexpected=["Traceback"],
+            after=lambda: _list_holds(
+                f"{OUTPUT_DIR}/rare_contest_only_listed.txt",
+                exactly=["1-1-46", "1-1-47", "1-1-48"],
+            ),
+        ),
+        CommandTest(
+            # Without --redacted-list the report still counts them, and says
+            # how to get the list.
+            name="visible_rare_contest_ballots_reported_without_list",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--force",
+                f"{GENERATED_DIR}/rare_contest_only.csv",
+                f"{OUTPUT_DIR}/rare_contest_only_nolist.csv",
+            ],
+            expected=[
+                "3 ballot(s) carried a redacted contest",
+                "--redacted-list lists them with the redacted ballots.",
+            ],
+            unexpected=["Traceback"],
         ),
         CommandTest(
             # Redacting the tool's own output again is refused, as before: it

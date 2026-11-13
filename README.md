@@ -79,7 +79,9 @@ python3 anonymize_cvr.py input.csv output.csv --redact-on-precinct
 - `--force`: replace the output file, and the `--redacted-list` file, if they already exist.
   Without it an existing file is left alone and the run stops, and the output is never allowed to
   be the input file itself
-- `--redacted-list FILENAME`: write the ImprintedId of every redacted ballot to FILENAME
+- `--redacted-list FILENAME`: write to FILENAME the ImprintedId of every redacted ballot, and of
+  every visible ballot that carried a redacted contest. These are the ballots whose images also
+  need redaction
 - `--version`: print the version
 
 ## Example Workflow
