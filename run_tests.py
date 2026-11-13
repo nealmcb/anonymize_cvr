@@ -933,6 +933,22 @@ def _make_test_cases() -> List[TestCase]:
             input_file=f"{g}/rare_unique_contest.csv",
             output_file=f"{o}/rare_unique_contest.csv",
             expected=["Tally verification passed."],
+            unexpected=["Traceback", "too few ballots in the aggregate"],
+        ),
+        TestCase(
+            # Without balancing, LocalMeasure stays on the 6 rare ballots alone:
+            # the report names it and says what the aggregation line exposes.
+            name="no_balancing_warns_of_exposed_contest",
+            input_file=f"{g}/rare_unique_contest.csv",
+            output_file=f"{o}/no_balancing_exposed_contest.csv",
+            redact_flags=["--no-contest-balancing"],
+            expected=[
+                "WARNING: --no-contest-balancing was given, so these contests",
+                "ballots in the aggregate (1):",
+                "'LocalMeasure': 6 ballot(s)",
+                "Run without --no-contest-balancing to protect them.",
+                "Tally verification passed.",
+            ],
             unexpected=["Traceback"],
         ),
         TestCase(
@@ -1025,7 +1041,8 @@ def _make_test_cases() -> List[TestCase]:
         TestCase(
             # Every common style sits at exactly the floor (10), so no individual
             # donor has surplus.  Reaching the floor requires pulling a whole
-            # blocked style; rare 1 + blocked 10 -> aggregate of 11.
+            # blocked style; rare 1 + blocked 10 -> aggregate of 11.  The rare
+            # ballot's contest A is on no borrowed ballot, so it is reported.
             name="no_balancing_blocked_pull",
             input_file="test_case_cvr.csv",
             output_file=f"{o}/no_balancing_blocked_pull.csv",
@@ -1034,8 +1051,9 @@ def _make_test_cases() -> List[TestCase]:
                 "Tally verification passed.",
                 "Ballots borrowed from common styles: 10",
                 "Total ballots in aggregate: 11",
+                "'A': 1 ballot(s)",
             ],
-            unexpected=["Traceback", "WARNING"],
+            unexpected=["Traceback"],
         ),
         TestCase(
             # Fringe District is on 5 cards: emptied everywhere, "Redacted" in
@@ -1085,6 +1103,8 @@ def _make_test_cases() -> List[TestCase]:
             check_flags=["--keep-rare-contests"],
             expected=[
                 "WARNING: --keep-rare-contests was given",
+                "WARNING: balancing could not find enough ballots, so these contests",
+                "'Fringe District': 5 ballot(s)",
                 "Tally verification passed.",
             ],
             unexpected=["Traceback"],

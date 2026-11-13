@@ -1975,7 +1975,8 @@ Runs entirely in your browser — no file is uploaded to any server.</p>
     </label>
     <label>
         <input type="checkbox" id="noContestBalancing">
-        Skip contest balancing (still meets total ballot minimum)
+        Skip contest balancing (not recommended) &mdash; can reveal votes in contests that
+        only a few rare ballots carry
     </label>
     <label>
         <input type="checkbox" id="keepRareContests">
@@ -2615,6 +2616,47 @@ function ballotHasContest(row, contest, contestToColumns) {
     return (contestToColumns[contest] || []).some(ci => (row[ci] || '').trim() !== '');
 }
 
+// Return [contest name, ballots in the aggregate that carry it], in contest
+// order, for every contest that is on a rare ballot and on fewer than
+// minBallots of the aggregate's ballots.  The aggregation line shows such a
+// contest's totals for just those ballots, and the starred rows show which
+// ballots they are.  A contest that only borrowed ballots carry is left out:
+// a borrowed ballot comes from a common style and would otherwise have been
+// published in full.  rareRows and aggregateBallots hold { rowIdx, row }.
+function exposedContests(rareRows, aggregateBallots, db, minBallots) {
+    const exposed = [];
+    for (const name of db.contestNames) {
+        if (!rareRows.some(b => ballotHasContest(b.row, name, db.contestToColumns)))
+            continue;
+        const count = aggregateBallots.filter(
+            b => ballotHasContest(b.row, name, db.contestToColumns)).length;
+        if (count < minBallots) exposed.push([name, count]);
+    }
+    return exposed;
+}
+
+// Log the contests exposedContests() found, and what that exposes.
+function warnExposedContests(exposed, minBallots, noContestBalancing, log) {
+    if (exposed.length === 0) return;
+    log('');
+    if (noContestBalancing)
+        log('  WARNING: contest balancing was skipped, so these contests are on too few ' +
+            'ballots in the aggregate (' + exposed.length + '):');
+    else
+        log('  WARNING: balancing could not find enough ballots, so these contests are on ' +
+            'too few ballots in the aggregate (' + exposed.length + '):');
+    for (const [name, count] of exposed)
+        log("    '" + name + "': " + count + ' ballot(s)');
+    log("  The aggregation line shows each contest's totals for just those ballots, and " +
+        'the starred rows show which ballots they are.  A contest on 1 ballot reveals ' +
+        "that ballot's vote; a contest on a few reveals their votes whenever they agree.");
+    if (noContestBalancing)
+        log('  Run again with "Skip contest balancing" unticked to protect them.');
+    else
+        log('  Fewer than ' + minBallots + ' ballots that can be borrowed carry these ' +
+            'contests; consider redacting them by hand.');
+}
+
 function imbalanceReduction(contest, row, choiceCounts, contestChoiceMeta) {
     const current  = choiceCounts[contest] || {};
     const curVals  = Object.values(current);
@@ -2899,6 +2941,8 @@ function pass2CollectRareRows(file, db, index, needs, redactOnPrecinct, minBallo
             complete: function() {
                 if (gap === 0) {
                     // Rare ballots already meet the floor; no borrowing.
+                    warnExposedContests(
+                        exposedContests(rareRows, rareRows, db, minBallots), minBallots, true, log);
                     resolve({
                         redactedRowIndices: new Set(rareRows.map(b => b.rowIdx)),
                         aggregateRow: buildAggregateRow(rareRows.map(b => b.row), db, 'AGGREGATED'),
@@ -2936,6 +2980,9 @@ function pass2CollectRareRows(file, db, index, needs, redactOnPrecinct, minBallo
                         ' ballots for the aggregate (minimum ' + minBallots +
                         '). Not enough surplus common ballots exist county-wide to reach the floor.');
 
+                warnExposedContests(
+                    exposedContests(rareRows, aggregate.ballots, db, minBallots),
+                    minBallots, true, log);
                 resolve({
                     redactedRowIndices: new Set(aggregate.ballots.map(b => b.rowIdx)),
                     aggregateRow: buildAggregateRow(aggregate.ballots.map(b => b.row), db, 'AGGREGATED'),
@@ -3100,6 +3147,9 @@ function pass2LoadAndBuild(file, db, index, needs, minBallots, redactOnPrecinct,
                             maxVotes + " out of " + totalVotes + " votes");
                 }
 
+                warnExposedContests(
+                    exposedContests(rareRows, aggregate.ballots, db, minBallots),
+                    minBallots, false, log);
                 resolve({
                     redactedRowIndices: new Set(aggregate.ballots.map(b => b.rowIdx)),
                     aggregateRow: buildAggregateRow(aggregate.ballots.map(b => b.row), db, 'AGGREGATED'),
