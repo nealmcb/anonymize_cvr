@@ -311,8 +311,8 @@ def _contest_redacted(contest: str) -> Callable[[str], List[str]]:
     return check
 
 
-def _aggregation_zero_except(contest: str) -> Callable[[str], List[str]]:
-    """Check the aggregation line has 0 in every vote column except contest's."""
+def _aggregation_empty_except(contest: str) -> Callable[[str], List[str]]:
+    """Check the aggregation line is empty in every vote column except contest's."""
 
     def check(path: str) -> List[str]:
         rows = _read_cvr(path)
@@ -321,9 +321,9 @@ def _aggregation_zero_except(contest: str) -> Callable[[str], List[str]]:
             return ["  output has no single aggregation line"]
         redacted = set(_contest_columns(rows, contest))
         return [
-            f"  aggregation line has {agg[col]!r} in {rows[1][col]!r}, not '0'"
+            f"  aggregation line has {agg[col]!r} in {rows[1][col]!r}, not empty"
             for col in _vote_columns(rows)
-            if col not in redacted and agg[col] != "0"
+            if col not in redacted and agg[col] != ""
         ]
 
     return check
@@ -1072,7 +1072,7 @@ def _make_test_cases() -> List[TestCase]:
             unexpected=["Traceback", "Rare ballot styles", "WARNING"],
             file_checks=[
                 _contest_redacted("Fringe District"),
-                _aggregation_zero_except("Fringe District"),
+                _aggregation_empty_except("Fringe District"),
                 _rows_visible(["46", "47", "48"]),
             ],
         ),

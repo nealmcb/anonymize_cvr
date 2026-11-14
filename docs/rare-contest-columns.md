@@ -35,8 +35,8 @@ covers only the reverse case (one fingerprint carried under several labels), and
 - every one of its cells is emptied on every ballot row;
 - in the aggregation line, each of its choice columns says `Redacted`;
 - if the file has no aggregation line (no ballot was rare enough to need one), the tool adds one
-  that says `Redacted` in those columns and 0 in every other vote column. It stands for no
-  ballots.
+  that says `Redacted` in those columns and leaves every other vote column empty. It stands
+  for no ballots, so it carries no contest; a 0 would say some ballot carries it.
 
 The tool reports each redacted contest and its card count. On by default; `--keep-rare-contests`
 turns it off.
@@ -88,8 +88,8 @@ redacts the images on the list covers them too.
    visible or redacted (a redacted row gets no `*` there), and write `Redacted` in their columns of
    the aggregation line, which `_build_aggregate_row` would otherwise fill with sums. If there is no
    aggregation line, append one with the same identifier fields an aggregation line has, `Redacted`
-   in those columns and 0 in every other vote column, as an aggregation line always has a number in
-   each column it does not redact.
+   in those columns and every other vote column empty: in a CVR an empty cell means the contest is
+   not on the card and 0 means it is there and not voted, and this line stands for no cards.
 5. **Check what ships.** Leave the redacted columns out of both `pre_tally` and `post_tally`, so the
    tally check verifies the file that is written rather than passing because both sides still count
    the redacted votes.
@@ -145,7 +145,7 @@ redacts the images on the list covers them too.
 - A contest present only on two ballots of a rare style: its cells are empty on every row, its
   aggregation entries say `Redacted`, and the rest of the file adds up.
 - The same contest in a file with no rare ballots otherwise: an aggregation line is added that says
-  `Redacted` in its columns and 0 in every other vote column.
+  `Redacted` in its columns and leaves every other vote column empty.
 - A ballot rare only because of the redacted contest rejoins a common style and stays visible.
 - `--redacted-list` includes the visible ballots that carried a redacted contest.
 - `--keep-rare-contests` reproduces today's output exactly.
