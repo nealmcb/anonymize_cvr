@@ -566,9 +566,51 @@ def _scenario_blocked_style() -> Scenario:
 # ---------------------------------------------------------------------------
 
 
+def _scenario_contest_on_no_grouped_ballot() -> Scenario:
+    """
+    Two rare styles of 5 ballots each make an aggregate of exactly 10, so
+    nothing is borrowed with --no-contest-balancing.  No grouped ballot carries
+    Town Board, and the 5 that carry Measure all left it unvoted.
+    Expected aggregation line: Town Board's columns empty (no grouped ballot
+    carries it), Measure's columns 0 (carried, not voted), President summed.
+    Command: python anonymize_cvr.py --no-contest-balancing
+             testCases/generated/contest_on_no_grouped_ballot.csv /tmp/out.csv
+    """
+    contests = [
+        Contest("President", ["Alice", "Bob"]),
+        Contest("Measure", ["Yes", "No"]),
+        Contest("Town Board", ["Cy", "Di"]),
+    ]
+    ballots = [
+        # Rare: President + Measure, Measure unvoted, 5 ballots.
+        BallotSpec(["President", "Measure"], {"President": "Alice"}, count=5),
+        # Rare: President only, 5 ballots.
+        BallotSpec(["President"], {"President": "Bob"}, count=5),
+        # Common: all three contests, 20 ballots.
+        BallotSpec(
+            ["President", "Measure", "Town Board"],
+            {"President": "Alice", "Measure": "Yes", "Town Board": "Cy"},
+            count=10,
+        ),
+        BallotSpec(
+            ["President", "Measure", "Town Board"],
+            {"President": "Bob", "Measure": "No", "Town Board": "Di"},
+            count=10,
+        ),
+    ]
+    return Scenario(
+        filename="contest_on_no_grouped_ballot.csv",
+        description="Aggregate of two rare styles: one contest on no grouped ballot, one carried but unvoted.",
+        election_name="Test: Contest On No Grouped Ballot",
+        all_contests=contests,
+        ballots=ballots,
+    )
+
+
 def main() -> None:
     scenarios = [
         _scenario_no_redaction(),
+        _scenario_contest_on_no_grouped_ballot(),
         _scenario_needs_borrowing(),
         _scenario_rare_unique_contest(),
         _scenario_near_unanimous_fixable(),
