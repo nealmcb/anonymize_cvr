@@ -70,7 +70,10 @@ python3 anonymize_cvr.py input.csv output.csv --redact-on-precinct
 - `--redact-on-precinct`: aggregate precincts with fewer than the minimum, instead of blanking the
   PrecinctPortion column
 - `--stylecol N`: column index (0-based) of a named style field, if present
-- `--no-contest-balancing`: skip the optional per-contest minimum and near-unanimity balancing
+- `--no-contest-balancing`: not recommended. Skip the per-contest minimum and the near-unanimity
+  balancing, so only the total of `--min-ballots` ballots in the aggregate is enforced. A contest
+  carried by only a few of the rare ballots then has its votes for those ballots shown in the
+  aggregation line. The report lists any contests this leaves exposed
 - `--keep-rare-contests`: do not redact contests present on fewer than `--min-ballots` cards
 - `--drop-ballottype`: drop the `BallotType` column, and the `--stylecol` column if given, from the
   output, instead of grouping the ballots whose label is carried by fewer than `--min-ballots`
