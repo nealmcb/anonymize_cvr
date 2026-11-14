@@ -263,8 +263,47 @@ def run_command_test(tc: CommandTest) -> bool:
     return True
 
 
+def _aggregation_cells(path: str) -> List[str]:
+    """
+    Check the aggregation line of the contest_on_no_grouped_ballot output:
+    empty for a contest no grouped ballot carries, 0 for one carried but
+    unvoted, the sum for one with votes.
+    """
+    import csv
+
+    with open(path, newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    contests, aggregate = rows[1], rows[-1]
+    want = {"President": ["5", "5"], "Measure": ["0", "0"], "Town Board": ["", ""]}
+    failures = []
+    for name, cells in want.items():
+        got = [aggregate[i] for i, c in enumerate(contests) if c == name]
+        if got != cells:
+            failures.append(f"  aggregation line for {name}: {got}, expected {cells}")
+    return failures
+
+
 def _make_command_tests() -> List[CommandTest]:
     return [
+        CommandTest(
+            # The aggregation line keeps a contest's columns empty when no
+            # grouped ballot carries it, and 0 when they carry it unvoted.
+            name="aggregation_empty_for_contest_on_no_grouped_ballot",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--no-contest-balancing",
+                f"{GENERATED_DIR}/contest_on_no_grouped_ballot.csv",
+                f"{OUTPUT_DIR}/contest_on_no_grouped_ballot.csv",
+            ],
+            setup=lambda: _remove_if_present(
+                f"{OUTPUT_DIR}/contest_on_no_grouped_ballot.csv"
+            ),
+            expected=["Tally verification passed."],
+            after=lambda: _aggregation_cells(
+                f"{OUTPUT_DIR}/contest_on_no_grouped_ballot.csv"
+            ),
+        ),
         CommandTest(
             # tkinter is imported only inside the window code, so the module
             # must import, and the command line must work, without it.
