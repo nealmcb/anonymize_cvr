@@ -2477,7 +2477,10 @@ function buildAggregateRow(ballots, db, aggregateId) {
     if (db.precinctPortionIdx !== null) result[db.precinctPortionIdx] = '';
     if (db.ballotTypeIdx      !== null) result[db.ballotTypeIdx]      = 'AGGREGATED';
 
+    // A column empty on every ballot in the group stays empty: none of these
+    // ballots carries the contest.  A 0 would say some of them carry it.
     for (let colIdx = db.headerlen; colIdx < ballots[0].length; colIdx++) {
+        if (ballots.every(b => (b[colIdx] || '').trim() === '')) { result.push(''); continue; }
         let total = 0;
         for (const b of ballots) {
             const p = parseFloat((b[colIdx] || '').trim());
@@ -2492,7 +2495,7 @@ function redactBallotRow(row, db, redactOnPrecinct) {
     const r = [...row];
     if (db.countingGroupIdx !== null) r[db.countingGroupIdx] = '';
     if (!redactOnPrecinct && db.precinctPortionIdx !== null) r[db.precinctPortionIdx] = '';
-    for (let i = db.headerlen; i < r.length; i++) r[i] = '*';
+    for (let i = db.headerlen; i < r.length; i++) if (row[i] !== '') r[i] = '*';
     return r;
 }
 
