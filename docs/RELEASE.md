@@ -83,8 +83,9 @@ released, and its output names the version.
    then check that the `anonymize_cvr.py` inside is byte-identical to the signed file on the
    release page, and install that wheel file, or install with `--require-hashes` and the
    published hash. `pipx install anonymize_cvr` or `uv tool install anonymize_cvr` installs the
-   commands `anonymize_cvr`, `anonymize_cvr_gui` and `verify-redaction`; on Windows
-   `anonymize_cvr_gui` is a launcher that opens the window without a console.
+   commands `anonymize_cvr` and `anonymize_cvr_gui`; on Windows `anonymize_cvr_gui` is a
+   launcher that opens the window without a console. The checker runs as
+   `python -m verify_redaction original.csv redacted.csv`.
 3. **A signed Windows program** (planned for a later release, see below). A bundled `.exe`
    carries its own Python interpreter and can't practically be read, so it asks for the most
    trust; its signature says who built it, not what it does. If one is offered, it is built in the
