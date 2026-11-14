@@ -31,6 +31,7 @@ import os
 import queue as queue_module
 import sys
 import tempfile
+import textwrap
 import threading
 from collections import defaultdict
 from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Set, Tuple
@@ -38,7 +39,7 @@ from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Set, Tuple
 if TYPE_CHECKING:
     import tkinter as tk
 
-VERSION = "0.3"
+VERSION = "0.4"
 
 MIN_BALLOTS_DEFAULT = 10
 NEAR_UNANIMOUS_THRESHOLD = 2  # "all but N votes" triggers balancing (Rule c)
@@ -216,6 +217,12 @@ class CvrDatabase:
         # contest name -> {col_idx: choice_name} (used for vote tallying)
         self.contest_choice_meta: Dict[str, Dict[int, str]] = {}
 
+        # Contests set aside by set_aside_contests() (too rare to protect), and
+        # their column indices.  They stay in the file but are emptied on every
+        # ballot row and marked "Redacted" in the aggregation line.
+        self.set_aside_contest_names: List[str] = []
+        self.set_aside_columns: List[int] = []
+
         self._read_file()
         self._validate()
         self._build_contest_map()
@@ -308,6 +315,29 @@ class CvrDatabase:
                 col_map[col_idx] = choice_name if choice_name else f"Choice{col_idx}"
             self.contest_choice_meta[contest_name] = col_map
 
+    # ------------------------------------------------------------------
+    # Public helpers
+    # ------------------------------------------------------------------
+
+    def set_aside_contests(self, names: Set[str]) -> None:
+        """
+        Take the named contests out of contest_names, contest_to_columns and
+        contest_choice_meta, and record them and their columns.
+
+        Everything that reasons about contests (rare-ballot detection, contest
+        balancing, the near-unanimity check, the leakage warnings) then never
+        sees them.  Pass 3 empties their columns and marks them "Redacted".
+        """
+        for name in self.contest_names:
+            if name in names:
+                self.set_aside_contest_names.append(name)
+                self.set_aside_columns.extend(self.contest_to_columns[name])
+        self.set_aside_columns.sort()
+        self.contest_names = [n for n in self.contest_names if n not in names]
+        for name in names:
+            self.contest_to_columns.pop(name, None)
+            self.contest_choice_meta.pop(name, None)
+
 
 # ---------------------------------------------------------------------------
 # RowIndex
@@ -342,6 +372,19 @@ class RowIndex:
         self.rows_by_ballot_type: Dict[str, List[int]] = {}
         # total non-empty rows counted (includes skip rows)
         self.total_rows: int = 0
+        # Labels on skip rows (already redacted, or the aggregation line), which
+        # still carry them in the file: label value -> row count.  Check mode only.
+        self.skipped_ballot_type_counts: Dict[str, int] = {}
+        self.skipped_named_style_counts: Dict[str, int] = {}
+        # Ballots made rare because they carry a rare label: row index -> the
+        # privacy unit they were moved into (see make_rare_label_rows_rare).
+        self.label_unit_for_row: Dict[int, Tuple[str, str]] = {}
+
+    def privacy_unit_for_row(
+        self, row_idx: int, style: str, precinct: str
+    ) -> Tuple[str, str]:
+        """Return the privacy unit (key of rows_by_privacy_unit) a row belongs to."""
+        return self.label_unit_for_row.get(row_idx, (style, precinct))
 
     def style_for_row(self, row_idx: int) -> Optional[str]:
         """Return the style string for a row, or None if the row was skipped."""
@@ -408,6 +451,8 @@ def build_row_index(
     by_privacy_unit: Dict[Tuple[str, str], List[int]] = defaultdict(list)
     by_named_style: Dict[str, List[int]] = defaultdict(list)
     by_ballot_type: Dict[str, List[int]] = defaultdict(list)
+    skipped_bt: Dict[str, int] = {}
+    skipped_ns: Dict[str, int] = {}
 
     expected_cols = len(db.contests)
 
@@ -433,6 +478,12 @@ def build_row_index(
                         "cannot re-redact a previously anonymized file."
                     )
                 index.style_id_for_row.append(None)
+                if db.ballot_type_idx is not None:
+                    label = row[db.ballot_type_idx].strip()
+                    skipped_bt[label] = skipped_bt.get(label, 0) + 1
+                if db.named_style_col is not None:
+                    label = row[db.named_style_col].strip()
+                    skipped_ns[label] = skipped_ns.get(label, 0) + 1
                 continue
             # County pre-redacted rows: all vote columns blank.  Nothing to analyse or
             # anonymize; pass through unchanged in both check and redact modes.
@@ -468,7 +519,194 @@ def build_row_index(
     index.rows_by_privacy_unit = dict(by_privacy_unit)
     index.rows_by_named_style = dict(by_named_style)
     index.rows_by_ballot_type = dict(by_ballot_type)
+    index.skipped_ballot_type_counts = skipped_bt
+    index.skipped_named_style_counts = skipped_ns
     return index
+
+
+# ---------------------------------------------------------------------------
+# Contests and labels too rare to protect
+# ---------------------------------------------------------------------------
+
+
+def contest_card_counts(index: RowIndex, db: CvrDatabase) -> Dict[str, int]:
+    """
+    Return {contest name: number of cards it is present on}, in contest order.
+
+    Computed from the pass-1 style strings, with no further read of the file:
+    a contest's count is the sum, over the privacy units whose style has a '1'
+    in its position, of the number of rows in that unit.  Skipped rows (rows
+    already redacted, the aggregation line, rows a county blanked) count for
+    nothing.
+    """
+    counts: Dict[str, int] = {name: 0 for name in db.contest_names}
+    for (style, _), row_indices in index.rows_by_privacy_unit.items():
+        for i, name in enumerate(db.contest_names):
+            if style[i] == "1":
+                counts[name] += len(row_indices)
+    return counts
+
+
+def rare_contests(index: RowIndex, db: CvrDatabase, min_ballots: int) -> Dict[str, int]:
+    """
+    Return {contest name: card count} for every contest present on more than 0
+    and fewer than min_ballots cards in the file, in contest order.
+
+    Such a contest cannot be protected by an aggregate of min_ballots ballots:
+    every card that carries it would be in the aggregate, and its totals would
+    pass straight through.  A contest present on no card reveals nothing and is
+    left alone.
+    """
+    return {
+        name: count
+        for name, count in contest_card_counts(index, db).items()
+        if 0 < count < min_ballots
+    }
+
+
+def set_aside_rare_contests(index: RowIndex, db: CvrDatabase, names: Set[str]) -> None:
+    """
+    Recompute the pass-1 styles as if the named contests had never been in the
+    file, then hide them in db (CvrDatabase.set_aside_contests).
+
+    Their positions are dropped from every style string, styles that become
+    identical are merged, and style_strings, style_id_for_row and
+    rows_by_privacy_unit are rebuilt from the merged styles.  This runs in
+    memory, from the style strings pass 1 built; the file is not read again.
+    A ballot that was rare only because it carried one of these contests then
+    joins a common style and stays visible.
+    """
+    keep_positions = [i for i, name in enumerate(db.contest_names) if name not in names]
+
+    def strip(style: str) -> str:
+        """Return style without the set-aside contests' positions."""
+        return "".join(style[i] for i in keep_positions)
+
+    # Old style ID -> new style ID.  New IDs are assigned in old-ID order, which
+    # is the order styles first appear in the file.
+    new_strings: List[str] = []
+    new_id_for_string: Dict[str, int] = {}
+    new_id_for_old: List[int] = []
+    for old_style in index.style_strings:
+        new_style = strip(old_style)
+        if new_style not in new_id_for_string:
+            new_id_for_string[new_style] = len(new_strings)
+            new_strings.append(new_style)
+        new_id_for_old.append(new_id_for_string[new_style])
+
+    index.style_id_for_row = [
+        None if old_id is None else new_id_for_old[old_id]
+        for old_id in index.style_id_for_row
+    ]
+
+    merged: Dict[Tuple[str, str], List[int]] = {}
+    for (style, precinct), row_indices in index.rows_by_privacy_unit.items():
+        merged.setdefault((strip(style), precinct), []).extend(row_indices)
+    for row_indices in merged.values():
+        row_indices.sort()
+
+    index.style_strings = new_strings
+    index.rows_by_privacy_unit = merged
+    db.set_aside_contests(names)
+
+
+def _rare_labels(
+    rows_by_label: Dict[str, List[int]],
+    skipped_counts: Dict[str, int],
+    min_ballots: int,
+) -> Dict[str, int]:
+    """
+    Return {label: ballot count} for every non-empty label carried by fewer
+    than min_ballots ballots, at least one of them with visible votes.
+
+    The count includes rows already redacted (skipped_counts), which still
+    carry the label; a label left only on redacted rows exposes no votes.
+    """
+    return {
+        label: len(row_indices) + skipped_counts.get(label, 0)
+        for label, row_indices in sorted(rows_by_label.items())
+        if label
+        and row_indices
+        and len(row_indices) + skipped_counts.get(label, 0) < min_ballots
+    }
+
+
+def rare_ballot_type_labels(index: RowIndex, min_ballots: int) -> Dict[str, int]:
+    """
+    Return {BallotType value: ballot count} for every label carried by fewer
+    than min_ballots ballots.
+
+    The rarity check works on fingerprints (which contests a ballot carries),
+    never on this label, so a rare label riding on a common fingerprint ships
+    next to visible votes and picks those ballots out.
+    """
+    return _rare_labels(
+        index.rows_by_ballot_type, index.skipped_ballot_type_counts, min_ballots
+    )
+
+
+def rare_named_style_labels(index: RowIndex, min_ballots: int) -> Dict[str, int]:
+    """
+    Return {named_style value: ballot count} for every --stylecol label carried
+    by fewer than min_ballots ballots.  Same exposure as a rare BallotType.
+    """
+    return _rare_labels(
+        index.rows_by_named_style, index.skipped_named_style_counts, min_ballots
+    )
+
+
+# Separates the precinct from a rare label in the privacy-unit key of a ballot
+# made rare by its label.  Not a character a CVR field holds.
+LABEL_UNIT_SEP = "\x00"
+
+
+def _split_unit_precinct(precinct: str) -> Tuple[str, Optional[str]]:
+    """Split a privacy-unit precinct into (precinct, rare-label description or None)."""
+    if LABEL_UNIT_SEP in precinct:
+        base, label = precinct.split(LABEL_UNIT_SEP, 1)
+        return base, label
+    return precinct, None
+
+
+def make_rare_label_rows_rare(
+    index: RowIndex,
+    rare_labels_by_column: List[Tuple[str, Dict[str, int], Dict[str, List[int]]]],
+) -> int:
+    """
+    Move every ballot that carries a rare label into a privacy unit of its own
+    (its style, its precinct and the label), so it is rare and is grouped into
+    the aggregate like any rare ballot.  Return the number of ballots moved.
+
+    rare_labels_by_column holds (column description, rare labels, rows by
+    label) for BallotType and the --stylecol column.  A ballot with rare
+    labels in both columns goes by the first.  What remains of a privacy unit
+    stays in it; if that is now fewer than min_ballots ballots, it is rare too.
+    """
+    tag_for_row: Dict[int, str] = {}
+    for description, labels, rows_by_label in rare_labels_by_column:
+        for label in labels:
+            for row_idx in rows_by_label.get(label, []):
+                tag_for_row.setdefault(row_idx, f"{description} {label!r}")
+    if not tag_for_row:
+        return 0
+
+    remaining: Dict[Tuple[str, str], List[int]] = {}
+    moved: Dict[Tuple[str, str], List[int]] = {}
+    for (style, precinct), row_indices in index.rows_by_privacy_unit.items():
+        keep: List[int] = []
+        for row_idx in row_indices:
+            tag = tag_for_row.get(row_idx)
+            if tag is None:
+                keep.append(row_idx)
+                continue
+            key = (style, precinct + LABEL_UNIT_SEP + tag)
+            moved.setdefault(key, []).append(row_idx)
+            index.label_unit_for_row[row_idx] = key
+        if keep:
+            remaining[(style, precinct)] = keep
+    remaining.update(moved)
+    index.rows_by_privacy_unit = remaining
+    return len(tag_for_row)
 
 
 # ---------------------------------------------------------------------------
@@ -503,8 +741,26 @@ class RedactionNeeds:
         # Human-readable leakage warnings.  Leakage is reported but not corrected.
         self.leakage_warnings: List[str] = []
 
+        # Contests present on fewer than min_ballots cards, set aside before
+        # rare-ballot detection and redacted in pass 3.
+        # Key: contest name.  Value: card count.
+        self.rare_contests: Dict[str, int] = {}
+
+        # Labels (BallotType or --stylecol) carried by fewer than min_ballots
+        # ballots with visible votes.  Key: description.  Value: ballot count.
+        self.rare_labels: Dict[str, int] = {}
+
     def needs_redaction(self) -> bool:
         """Return True if any redaction work is required."""
+        return (
+            len(self.rare_styles) > 0
+            or len(self.rare_privacy_unit_pairs) > 0
+            or len(self.rare_contests) > 0
+            or len(self.rare_labels) > 0
+        )
+
+    def needs_aggregate(self) -> bool:
+        """Return True if some ballots are rare and must be grouped (pass 2)."""
         return len(self.rare_styles) > 0 or len(self.rare_privacy_unit_pairs) > 0
 
 
@@ -1015,6 +1271,35 @@ def _build_aggregate_row(
     return result
 
 
+def _added_aggregate_row(db: CvrDatabase) -> List[str]:
+    """
+    Build the aggregation line for a file that needs one only to mark set-aside
+    contests "Redacted": no ballot was rare enough to need grouping.
+
+    It has the identifier fields an aggregation line always has (CvrNumber and
+    BallotType "AGGREGATED", the other identifiers blank) and every vote column
+    empty; pass 3 writes "Redacted" over the set-aside contests' columns.  It
+    stands for no ballots, so it carries no contest, and an empty cell says so
+    as it does on a ballot row (a 0 would say a ballot carries the contest).
+    """
+    result = [""] * db.headerlen
+    result[0] = "AGGREGATED"
+    if db.ballot_type_idx is not None:
+        result[db.ballot_type_idx] = "AGGREGATED"
+    result.extend("" for _ in range(db.headerlen, len(db.contests)))
+    return result
+
+
+def _empty_columns(row: List[str], columns: List[int]) -> List[str]:
+    """Return a copy of row with the given columns emptied (or row itself if none)."""
+    if not columns:
+        return row
+    result = row.copy()
+    for col_idx in columns:
+        result[col_idx] = ""
+    return result
+
+
 def _remove_columns(row: List[str], cols_to_remove: List[int]) -> List[str]:
     """Return a copy of row with the specified column indices omitted."""
     remove_set = set(cols_to_remove)
@@ -1386,7 +1671,7 @@ def load_donor_pool(
                 precinct = row[db.precinct_portion_idx].strip()
             else:
                 precinct = ""
-            privacy_unit = (row_style, precinct)
+            privacy_unit = index.privacy_unit_for_row(row_idx, row_style, precinct)
 
             if privacy_unit in rare_privacy_unit_set:
                 rare_rows.append(row)
@@ -1622,7 +1907,7 @@ def collect_rare_rows(
                 precinct = row[db.precinct_portion_idx].strip()
             else:
                 precinct = ""
-            privacy_unit = (row_style, precinct)
+            privacy_unit = index.privacy_unit_for_row(row_idx, row_style, precinct)
 
             if privacy_unit in rare_privacy_unit_set:
                 rare_rows.append(row)
@@ -1699,11 +1984,21 @@ def collect_rare_rows(
     return redacted_row_indices, aggregate_row
 
 
-def _add_to_tally(tally: List[float], row: List[str], headerlen: int) -> None:
-    """Add the vote column values from row into tally (in-place)."""
+def _add_to_tally(
+    tally: List[float],
+    row: List[str],
+    headerlen: int,
+    skip_columns: Optional[Set[int]] = None,
+) -> None:
+    """
+    Add the vote column values from row into tally (in-place), leaving out
+    any column in skip_columns (the set-aside contests, which do not ship).
+    """
     for i in range(len(tally)):
         col_idx = headerlen + i
         if col_idx >= len(row):
+            continue
+        if skip_columns and col_idx in skip_columns:
             continue
         val = row[col_idx].strip()
         if val:
@@ -1754,31 +2049,62 @@ def _stream_redacted_output(
     aggregate_row: Optional[List[str]],
     redact_on_precinct: bool,
     redacted_list_file: Optional[str],
-) -> None:
+    drop_ballottype: bool = False,
+) -> int:
     """
     Pass 3: stream input to output, redacting rows in redacted_row_indices,
     appending the aggregate row (if any), and verifying vote tallies match.
+    Return the number of visible ballots that carried a set-aside contest.
+
+    The set-aside contests (db.set_aside_columns) are emptied on every ballot
+    row, visible or redacted, and say "Redacted" in the aggregation line.  If
+    there are any and there is no aggregation line, one is added that stands
+    for no ballots (see _added_aggregate_row).
 
     pre_tally  — running sum of original vote columns for every input row.
     post_tally — running sum of vote columns for non-redacted rows, plus the
                  aggregate row.  Must equal pre_tally if redaction is correct.
+    Both leave out the set-aside columns, so the check is of what ships.
+
+    The redacted list gets the ImprintedId of every redacted ballot, and of
+    every visible ballot that carried a set-aside contest: its row shows
+    nothing of that contest, but an image of the ballot shows the contest and
+    the marks in it.
     """
     # Columns that carry no information in the output and should be omitted entirely.
     # CountingGroup is always removed.  PrecinctPortion is removed when not redacting
-    # on precinct, because every row has it blanked in that case.
-    cols_to_remove: List[int] = []
+    # on precinct, because every row has it blanked in that case.  BallotType and
+    # the --stylecol column are removed on request (drop_ballottype).
+    remove_set: Set[int] = set()
     if db.counting_group_idx is not None:
-        cols_to_remove.append(db.counting_group_idx)
+        remove_set.add(db.counting_group_idx)
     if not redact_on_precinct and db.precinct_portion_idx is not None:
-        cols_to_remove.append(db.precinct_portion_idx)
-    cols_to_remove.sort()
+        remove_set.add(db.precinct_portion_idx)
+    if drop_ballottype:
+        if db.ballot_type_idx is not None:
+            remove_set.add(db.ballot_type_idx)
+        if db.named_style_col is not None:
+            remove_set.add(db.named_style_col)
+    cols_to_remove: List[int] = sorted(remove_set)
+
+    blank_cols = db.set_aside_columns
+    skip_cols: Set[int] = set(blank_cols)
+    if blank_cols:
+        if aggregate_row is None:
+            aggregate_row = _added_aggregate_row(db)
+        else:
+            aggregate_row = aggregate_row.copy()
+        for col_idx in blank_cols:
+            aggregate_row[col_idx] = "Redacted"
 
     num_vote_cols = len(db.contests) - db.headerlen
     pre_tally: List[float] = [0.0] * num_vote_cols
     post_tally: List[float] = [0.0] * num_vote_cols
 
-    # add 'anonymize_cvr-v0.3'
+    # add e.g. 'anonymize_cvr-v0.4'
     ourversion = f"anonymize_cvr-v{VERSION}"
+
+    visible_with_rare_contest = 0
 
     tmp_output: Optional[str] = None
     tmp_list: Optional[str] = None
@@ -1812,7 +2138,14 @@ def _stream_redacted_output(
                     ):
                         if row_idx > 0 and row_idx % 100000 == 0:
                             print(f"  {row_idx:,} rows written...", flush=True)
-                        _add_to_tally(pre_tally, row, db.headerlen)
+                        _add_to_tally(pre_tally, row, db.headerlen, skip_cols)
+                        carried_rare_contest = any(
+                            col_idx < len(row) and row[col_idx].strip()
+                            for col_idx in blank_cols
+                        )
+                        # Empty the set-aside contests first, so a redacted
+                        # row gets no '*' in their columns.
+                        row = _empty_columns(row, blank_cols)
                         if row_idx in redacted_row_indices:
                             if list_out is not None and len(row) > 4:
                                 list_out.write(row[4] + "\n")
@@ -1823,15 +2156,21 @@ def _stream_redacted_output(
                                 )
                             )
                         else:
+                            if carried_rare_contest:
+                                visible_with_rare_contest += 1
+                                if list_out is not None and len(row) > 4:
+                                    list_out.write(row[4] + "\n")
                             out_row = _blank_geographic_fields(
                                 row, db, redact_on_precinct
                             )
                             writer.writerow(_remove_columns(out_row, cols_to_remove))
-                            _add_to_tally(post_tally, row, db.headerlen)
+                            _add_to_tally(post_tally, row, db.headerlen, skip_cols)
 
                     if aggregate_row is not None:
                         writer.writerow(_remove_columns(aggregate_row, cols_to_remove))
-                        _add_to_tally(post_tally, aggregate_row, db.headerlen)
+                        _add_to_tally(
+                            post_tally, aggregate_row, db.headerlen, skip_cols
+                        )
         finally:
             if list_out is not None:
                 list_out.close()
@@ -1854,6 +2193,7 @@ def _stream_redacted_output(
         os.replace(tmp_output, output_file)
         if tmp_list is not None and redacted_list_file is not None:
             os.replace(tmp_list, redacted_list_file)
+        return visible_with_rare_contest
     except BaseException:
         for leftover in (tmp_output, tmp_list):
             if leftover is not None:
@@ -1871,34 +2211,53 @@ def perform_redaction(
     redact_on_precinct: bool,
     redacted_list_file: Optional[str],
     no_contest_balancing: bool = False,
+    drop_ballottype: bool = False,
 ) -> None:
-    """Orchestrate passes 2 and 3 to produce the anonymized CVR."""
-    if needs.needs_redaction():
-        if no_contest_balancing:
-            result = collect_rare_rows(
-                csv_path, index, needs, db, redact_on_precinct, min_ballots
-            )
-        else:
-            result = load_donor_pool(
-                csv_path, index, needs, db, min_ballots, redact_on_precinct
-            )
-        redacted_row_indices: Set[int] = result[0]
-        aggregate_row: Optional[List[str]] = result[1]
+    """
+    Orchestrate passes 2 and 3 to produce the anonymized CVR.
 
-        rare_count = 0
-        for key, row_indices in index.rows_by_privacy_unit.items():
-            if key in needs.rare_privacy_unit_pairs:
-                rare_count += len(row_indices)
+    Pass 2 runs only if some ballots are rare.  Pass 3 runs if anything needs
+    redacting (rare ballots or rare contests) or a label column is to be
+    dropped; otherwise no output is written.
+    """
+    drops_a_column = drop_ballottype and (
+        db.ballot_type_idx is not None or db.named_style_col is not None
+    )
+    if needs.needs_redaction() or drops_a_column:
+        redacted_row_indices: Set[int] = set()
+        aggregate_row: Optional[List[str]] = None
+        if needs.needs_aggregate():
+            if no_contest_balancing:
+                result = collect_rare_rows(
+                    csv_path, index, needs, db, redact_on_precinct, min_ballots
+                )
+            else:
+                result = load_donor_pool(
+                    csv_path, index, needs, db, min_ballots, redact_on_precinct
+                )
+            redacted_row_indices = result[0]
+            aggregate_row = result[1]
 
-        print("\n*** Pass 2 complete.")
-        print(f"  Ballots from rare styles/precincts: {rare_count}")
-        borrowed_count = len(redacted_row_indices) - rare_count
-        if borrowed_count > 0:
-            print(f"  Ballots borrowed from common styles: {borrowed_count}")
-        print(f"  Total ballots in aggregate: {len(redacted_row_indices)}")
+            rare_count = 0
+            for key, row_indices in index.rows_by_privacy_unit.items():
+                if key in needs.rare_privacy_unit_pairs:
+                    rare_count += len(row_indices)
+
+            print("\n*** Pass 2 complete.")
+            print(f"  Ballots from rare styles/precincts: {rare_count}")
+            borrowed_count = len(redacted_row_indices) - rare_count
+            if borrowed_count > 0:
+                print(f"  Ballots borrowed from common styles: {borrowed_count}")
+            print(f"  Total ballots in aggregate: {len(redacted_row_indices)}")
+        elif needs.rare_contests:
+            print("\n*** No ballot styles are rare; pass 2 is not needed.")
+            print(
+                "  An aggregation line standing for no ballots will be added to "
+                "mark the redacted contests."
+            )
 
         print("\n*** Pass 3: Writing output.")
-        _stream_redacted_output(
+        visible_with_rare_contest = _stream_redacted_output(
             csv_path,
             db,
             output_file,
@@ -1906,10 +2265,22 @@ def perform_redaction(
             aggregate_row,
             redact_on_precinct,
             redacted_list_file,
+            drop_ballottype,
         )
         print(f"  Output written to {output_file}.")
         if redacted_list_file is not None:
             print(f"  Redacted ballot list written to {redacted_list_file}.")
+        if visible_with_rare_contest:
+            _print_wrapped(
+                f"{visible_with_rare_contest} ballot(s) carried a redacted contest "
+                "and stay visible in the CVR, with that contest emptied.  Their "
+                "images still show the contest and the marks in it, so they need "
+                "redacting on any ballot images released."
+            )
+            if redacted_list_file is not None:
+                print("  They are in the redacted ballot list too.")
+            else:
+                print("  --redacted-list lists them with the redacted ballots.")
 
 
 # ---------------------------------------------------------------------------
@@ -2018,9 +2389,12 @@ def _report_check_results(
             named_styles_for_style = named_styles_by_style.get(style, set())
 
             parts = []
+            base_precinct, rare_label = _split_unit_precinct(precinct)
             if show_precinct:
-                parts.append(f'precinct "{precinct}"')
-            if ballot_types:
+                parts.append(f'precinct "{base_precinct}"')
+            if rare_label is not None:
+                parts.append(f"rare {rare_label}")
+            elif ballot_types:
                 parts.append(
                     "ballot type: " + ", ".join(f'"{t}"' for t in sorted(ballot_types))
                 )
@@ -2038,11 +2412,172 @@ def _report_check_results(
         print("No redaction needed.")
 
 
+# Follows "Dropping the column protects only the CVR." or "Grouping these
+# ballots protects only the CVR.", whichever remedy applies.
+IMAGE_WARNING_LABELS = (
+    "The same label is often printed "
+    "on the ballot itself (a ballot-style code, a precinct number), so any ballot "
+    "images the county releases carry it too, and a rare label on an image "
+    "identifies the ballot just as it would in the CVR.  The county must redact "
+    "the label on those images as well, or better, stop printing a label that a "
+    "few ballots alone carry."
+)
+
+IMAGE_WARNING_CONTESTS = (
+    "This protects only the CVR.  An image of one of these ballots shows the "
+    "contest and the marks in it; the county must redact the contest on any "
+    "ballot images it releases as well."
+)
+
+
+def _print_wrapped(text: str, indent: str = "  ") -> None:
+    """Print a paragraph wrapped at 78 columns with the given indent."""
+    print(
+        textwrap.fill(text, width=78, initial_indent=indent, subsequent_indent=indent)
+    )
+
+
+def _report_rare_contests(
+    rare: Dict[str, int],
+    min_ballots: int,
+    keep_rare_contests: bool,
+    check_mode: bool,
+) -> None:
+    """Print the contests too rare to protect, their card counts, and what happens to them."""
+    if not rare:
+        return
+    print(
+        f"  Contests present on fewer than {min_ballots} cards "
+        f"({len(rare)}); grouping ballots cannot protect them:"
+    )
+    for name, count in rare.items():
+        print(f"    '{name}': {count} card(s)")
+    if keep_rare_contests:
+        print(
+            "  WARNING: --keep-rare-contests was given, so these contests are NOT "
+            "redacted;\n  their votes pass through the aggregation line."
+        )
+    else:
+        verb = "would be" if check_mode else "are"
+        _print_wrapped(
+            f"These contests {verb} redacted: their columns stay in the file, every "
+            "cell in them is emptied on every ballot row, and the aggregation line "
+            'says "Redacted" in them.'
+        )
+        _print_wrapped(IMAGE_WARNING_CONTESTS)
+    print()
+
+
+def _report_rare_labels(
+    index: RowIndex,
+    db: CvrDatabase,
+    min_ballots: int,
+    drop_ballottype: bool,
+    check_mode: bool = False,
+) -> List[Tuple[str, Dict[str, int], Dict[str, List[int]]]]:
+    """
+    Print every BallotType label, and every --stylecol label, carried by fewer
+    than min_ballots ballots, which remedy applies, and the warning about
+    ballot images.  Return (column description, rare labels, rows by label)
+    for each column that has rare labels.
+    """
+    found: List[Tuple[str, Dict[str, int], Dict[str, List[int]]]] = []
+    for description, short, labels, rows_by_label in (
+        (
+            "BallotType labels",
+            "BallotType",
+            rare_ballot_type_labels(index, min_ballots),
+            index.rows_by_ballot_type,
+        ),
+        (
+            f"Named-style labels (column {db.named_style_col})",
+            "named style",
+            rare_named_style_labels(index, min_ballots),
+            index.rows_by_named_style,
+        ),
+    ):
+        if not labels:
+            continue
+        found.append((short, labels, rows_by_label))
+        print(
+            f"  WARNING: {description} carried by fewer than {min_ballots} "
+            f"ballots ({len(labels)}):"
+        )
+        for label, count in labels.items():
+            print(f"    '{label}': {count} ballot(s)")
+    if not found:
+        return found
+    _print_wrapped(
+        "A label this rare picks out the ballots that carry it, even when their "
+        "contest pattern is common."
+    )
+    are = "would be" if check_mode else "are"
+    if drop_ballottype:
+        _print_wrapped(
+            f"The label column(s) {are} dropped from the output (--drop-ballottype); "
+            "these ballots are not grouped on account of the label."
+        )
+        _print_wrapped(
+            "Dropping the column protects only the CVR.  " + IMAGE_WARNING_LABELS
+        )
+    else:
+        _print_wrapped(
+            f"These ballots {are} treated as rare: grouped into the aggregate, "
+            "with their votes starred.  The label column stays; --drop-ballottype "
+            "drops it instead."
+        )
+        _print_wrapped(
+            "Grouping these ballots protects only the CVR.  " + IMAGE_WARNING_LABELS
+        )
+    print()
+    return found
+
+
+def _analyse_rows(
+    index: RowIndex,
+    db: CvrDatabase,
+    min_ballots: int,
+    redact_on_precinct: bool,
+    keep_rare_contests: bool,
+    drop_ballottype: bool,
+    check_mode: bool,
+) -> RedactionNeeds:
+    """
+    After pass 1: find and set aside the contests too rare to protect, find
+    the rare labels, report both, then find the rare ballots.
+
+    The rare contests are set aside first, so rare-ballot detection runs as if
+    they had never been in the file.  Unless the label columns are dropped, a
+    ballot carrying a rare label is then made rare (make_rare_label_rows_rare).
+    """
+    rare = rare_contests(index, db, min_ballots)
+    _report_rare_contests(rare, min_ballots, keep_rare_contests, check_mode)
+    if keep_rare_contests:
+        rare = {}
+    if rare:
+        set_aside_rare_contests(index, db, set(rare))
+
+    rare_label_columns = _report_rare_labels(
+        index, db, min_ballots, drop_ballottype, check_mode
+    )
+    if not drop_ballottype:
+        make_rare_label_rows_rare(index, rare_label_columns)
+
+    needs = check_redaction_needs(index, db, min_ballots, redact_on_precinct)
+    needs.rare_contests = rare
+    for short, labels, _ in rare_label_columns:
+        for label, count in labels.items():
+            needs.rare_labels[f"{short} {label!r}"] = count
+    return needs
+
+
 def execute_check(
     input_file: str,
     min_ballots: int,
     redact_on_precinct: bool,
     style_col: Optional[int] = None,
+    keep_rare_contests: bool = False,
+    drop_ballottype: bool = False,
 ) -> None:
     """
     Run check mode: pass 1 only.  Reports whether the CVR needs redaction.
@@ -2073,7 +2608,15 @@ def execute_check(
             raise CvrError(f"{input_file}: {e}") from e
         print()
 
-        needs = check_redaction_needs(index, db, min_ballots, redact_on_precinct)
+        needs = _analyse_rows(
+            index,
+            db,
+            min_ballots,
+            redact_on_precinct,
+            keep_rare_contests,
+            drop_ballottype,
+            check_mode=True,
+        )
 
         for warning in needs.leakage_warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
@@ -2090,6 +2633,8 @@ def execute_redact(
     style_col: Optional[int] = None,
     no_contest_balancing: bool = False,
     force: bool = False,
+    keep_rare_contests: bool = False,
+    drop_ballottype: bool = False,
 ) -> None:
     """
     Run full redaction: passes 1, 2, and 3.  Writes the anonymized CVR.
@@ -2134,7 +2679,15 @@ def execute_redact(
             raise CvrError(f"{input_file}: {e}") from e
         print()
 
-        needs = check_redaction_needs(index, db, min_ballots, redact_on_precinct)
+        needs = _analyse_rows(
+            index,
+            db,
+            min_ballots,
+            redact_on_precinct,
+            keep_rare_contests,
+            drop_ballottype,
+            check_mode=False,
+        )
 
         for warning in needs.leakage_warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
@@ -2152,6 +2705,7 @@ def execute_redact(
                 redact_on_precinct,
                 redacted_list_file,
                 no_contest_balancing,
+                drop_ballottype,
             )
         except CvrError:
             raise
@@ -2231,6 +2785,28 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--keep-rare-contests",
+        action="store_true",
+        help=(
+            "Do not redact contests present on fewer than --min-ballots cards. "
+            "By default such a contest keeps its columns, every cell in them is "
+            "emptied, and the aggregation line says 'Redacted' in them, because "
+            "grouping ballots cannot protect a contest rarer than the group."
+        ),
+    )
+    parser.add_argument(
+        "--drop-ballottype",
+        action="store_true",
+        help=(
+            "Drop the BallotType column, and the --stylecol column if given, from "
+            "the output.  A ballot whose label is carried by fewer than "
+            "--min-ballots ballots is otherwise treated as rare and grouped into "
+            "the aggregate; with this option the label goes instead, and the "
+            "ballot is not grouped on account of it.  Either way this protects "
+            "only the CVR, not ballot images that print the same label."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help=(
@@ -2244,8 +2820,9 @@ def parse_args() -> argparse.Namespace:
         metavar="FILENAME",
         default=None,
         help=(
-            "Write the ImprintedId of every redacted ballot to FILENAME, "
-            "one per line.  Useful for identifying ballot images that also need redaction."
+            "Write to FILENAME, one per line, the ImprintedId of every redacted "
+            "ballot and of every visible ballot that carried a redacted contest.  "
+            "These are the ballots whose images also need redaction."
         ),
     )
     args = parser.parse_args()
@@ -2272,6 +2849,8 @@ def cli_main() -> None:
                 args.min_ballots,
                 args.redact_on_precinct,
                 args.stylecol,
+                args.keep_rare_contests,
+                args.drop_ballottype,
             )
         else:
             execute_redact(
@@ -2283,6 +2862,8 @@ def cli_main() -> None:
                 args.stylecol,
                 args.no_contest_balancing,
                 args.force,
+                args.keep_rare_contests,
+                args.drop_ballottype,
             )
     except CvrError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -2300,7 +2881,7 @@ class CvrAnonymizerApp:
 
         self.root = root
         self.root.title("CVR Anonymizer")
-        self.root.geometry("700x540")
+        self.root.geometry("700x640")
         self.root.resizable(True, True)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -2308,6 +2889,8 @@ class CvrAnonymizerApp:
         self.config_no_contest_balancing: bool = False
         self.config_min_ballots: int = MIN_BALLOTS_DEFAULT
         self.config_style_col: Optional[int] = None
+        self.config_keep_rare_contests: bool = False
+        self.config_drop_ballottype: bool = False
 
         self._output_queue: "queue_module.Queue[Optional[str]]" = queue_module.Queue()
         self._run_button: Optional[tk.Button] = None
@@ -2387,6 +2970,10 @@ class CvrAnonymizerApp:
             parts.append("No contest balancing")
         if self.config_style_col is not None:
             parts.append(f"Style column: {self.config_style_col}")
+        if self.config_keep_rare_contests:
+            parts.append("Keep rare contests")
+        if self.config_drop_ballottype:
+            parts.append("Drop BallotType")
         tk.Label(
             self.root,
             text="  |  ".join(parts),
@@ -2434,6 +3021,33 @@ class CvrAnonymizerApp:
             frame,
             text="Skip contest balancing (still meets total ballot minimum)",
             variable=self._no_contest_balancing_var,
+            justify=tk.LEFT,
+            anchor=tk.W,
+        ).pack(anchor=tk.W, pady=(0, 12))
+
+        self._keep_rare_contests_var = tk.BooleanVar(
+            value=self.config_keep_rare_contests
+        )
+        tk.Checkbutton(
+            frame,
+            text=(
+                "Keep rare contests (not recommended)\n"
+                "Do not redact contests present on fewer than the minimum cards."
+            ),
+            variable=self._keep_rare_contests_var,
+            justify=tk.LEFT,
+            anchor=tk.W,
+        ).pack(anchor=tk.W, pady=(0, 12))
+
+        self._drop_ballottype_var = tk.BooleanVar(value=self.config_drop_ballottype)
+        tk.Checkbutton(
+            frame,
+            text=(
+                "Drop the BallotType column (and the style column, if set)\n"
+                "Ballots with a rare label are otherwise grouped as rare ballots;\n"
+                "this drops the label from the CVR instead (not from ballot images)."
+            ),
+            variable=self._drop_ballottype_var,
             justify=tk.LEFT,
             anchor=tk.W,
         ).pack(anchor=tk.W, pady=(0, 12))
@@ -2508,6 +3122,8 @@ class CvrAnonymizerApp:
 
         self.config_redact_on_precinct = self._redact_on_precinct_var.get()
         self.config_no_contest_balancing = self._no_contest_balancing_var.get()
+        self.config_keep_rare_contests = self._keep_rare_contests_var.get()
+        self.config_drop_ballottype = self._drop_ballottype_var.get()
         self.config_min_ballots = min_b
         self.config_style_col = style_col
         self._show_main_menu()
@@ -2606,6 +3222,8 @@ class CvrAnonymizerApp:
             self.config_style_col,
             self.config_no_contest_balancing,
             True,
+            self.config_keep_rare_contests,
+            self.config_drop_ballottype,
         )
 
     # ------------------------------------------------------------------
@@ -2661,6 +3279,8 @@ class CvrAnonymizerApp:
             self.config_min_ballots,
             self.config_redact_on_precinct,
             self.config_style_col,
+            self.config_keep_rare_contests,
+            self.config_drop_ballottype,
         )
 
     # ------------------------------------------------------------------

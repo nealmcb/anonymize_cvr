@@ -8,6 +8,12 @@ Verifies that a redacted CVR file is equivalent to its original:
   2. Total vote counts across all contests are preserved:
      original totals == (non-redacted rows) + (aggregate row).
 
+A column whose entry in the aggregation line says "Redacted" belongs to a
+contest too rare to protect: anonymize_cvr empties it on every ballot row.
+Its total is unknown, never zero, so it is left out of both checks; the check
+instead confirms that every ballot row has it empty, and the columns are
+reported.
+
 The redacted file has fewer header columns than the original (CountingGroup and
 possibly PrecinctPortion are removed entirely).  Both files have the same vote
 columns in the same order; only the column offset (headerlen) differs.
@@ -18,7 +24,7 @@ Usage:
 
 import csv
 import sys
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from anonymize_cvr import CvrDatabase
 
@@ -38,11 +44,46 @@ def _is_aggregate_row(row: List[str]) -> bool:
     return bool(row) and row[0].strip() == "AGGREGATED"
 
 
-def _add_vote_totals(tally: List[float], row: List[str], headerlen: int) -> None:
-    """Add the numeric vote values from a row into the running tally."""
+REDACTED = "Redacted"
+
+
+def _redacted_vote_columns(redacted_path: str, headerlen: int) -> Set[int]:
+    """
+    Return the vote-column offsets (0 = first vote column) whose entry in the
+    aggregation line says "Redacted", or an empty set if there is no such line.
+    """
+    aggregate_row: Optional[List[str]] = None
+    with open(redacted_path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for _ in range(4):
+            next(reader)
+        for row in reader:
+            if _is_aggregate_row(row):
+                aggregate_row = row
+    if aggregate_row is None:
+        return set()
+    return {
+        col_idx - headerlen
+        for col_idx in range(headerlen, len(aggregate_row))
+        if aggregate_row[col_idx].strip() == REDACTED
+    }
+
+
+def _add_vote_totals(
+    tally: List[float],
+    row: List[str],
+    headerlen: int,
+    skip: Optional[Set[int]] = None,
+) -> None:
+    """
+    Add the numeric vote values from a row into the running tally, leaving out
+    the vote-column offsets in skip (columns whose total is unknown).
+    """
     for i in range(len(tally)):
         col_idx = headerlen + i
         if col_idx >= len(row):
+            continue
+        if skip and i in skip:
             continue
         val = row[col_idx].strip()
         if val and val != "*":
@@ -53,6 +94,10 @@ def _add_vote_totals(tally: List[float], row: List[str], headerlen: int) -> None
 
 
 def verify(original_path: str, redacted_path: str) -> bool:
+    """
+    Compare a redacted CVR with its original; print the result and return True
+    if it passes.
+    """
     orig_db = CvrDatabase(original_path, headerlen=0, named_style_col=None)
     red_db = CvrDatabase(redacted_path, headerlen=0, named_style_col=None)
 
@@ -70,6 +115,22 @@ def verify(original_path: str, redacted_path: str) -> bool:
         return False
 
     num_vote_cols = orig_vote_cols
+
+    # Columns marked "Redacted" in the aggregation line: unknown totals.
+    redacted_cols = _redacted_vote_columns(redacted_path, red_headerlen)
+    if redacted_cols:
+        redacted_contests: List[str] = []
+        for i in sorted(redacted_cols):
+            name = orig_db.contests[orig_headerlen + i].strip()
+            if name not in redacted_contests:
+                redacted_contests.append(name)
+        print(
+            f"{len(redacted_cols)} vote column(s) in {len(redacted_contests)} "
+            'contest(s) say "Redacted" in the aggregation line; their totals are '
+            "unknown and are not compared, and every ballot row must leave them empty:"
+        )
+        for name in redacted_contests:
+            print(f"  {name!r}")
 
     orig_tally: List[float] = [0.0] * num_vote_cols
     redacted_tally: List[float] = [0.0] * num_vote_cols
@@ -103,7 +164,7 @@ def verify(original_path: str, redacted_path: str) -> bool:
                 if row_idx > 0 and row_idx % PROGRESS_INTERVAL == 0:
                     print(f"  {row_idx:,} rows checked...", flush=True)
 
-                _add_vote_totals(orig_tally, orig_row, orig_headerlen)
+                _add_vote_totals(orig_tally, orig_row, orig_headerlen, redacted_cols)
 
                 if _is_aggregate_row(red_row):
                     print(
@@ -113,11 +174,27 @@ def verify(original_path: str, redacted_path: str) -> bool:
                     )
                     return False
 
+                for vote_col in redacted_cols:
+                    red_val = red_row[red_headerlen + vote_col].strip()
+                    if red_val != "":
+                        col_name = orig_db.contests[orig_headerlen + vote_col]
+                        print(
+                            f"Error: row {row_idx + 5}, contest {col_name!r} says "
+                            f'"Redacted" in the aggregation line but this row '
+                            f"has {red_val!r}",
+                            file=sys.stderr,
+                        )
+                        row_errors += 1
+
                 if _is_redacted_row(red_row, red_headerlen):
                     pass  # vote columns are intentionally replaced; nothing to compare
                 else:
-                    _add_vote_totals(redacted_tally, red_row, red_headerlen)
+                    _add_vote_totals(
+                        redacted_tally, red_row, red_headerlen, redacted_cols
+                    )
                     for vote_col in range(num_vote_cols):
+                        if vote_col in redacted_cols:
+                            continue
                         orig_val = orig_row[orig_headerlen + vote_col].strip()
                         red_val = red_row[red_headerlen + vote_col].strip()
                         if orig_val != red_val:
@@ -140,7 +217,9 @@ def verify(original_path: str, redacted_path: str) -> bool:
             extra_row = next(red_rows, None)
             if extra_row is not None:
                 if _is_aggregate_row(extra_row):
-                    _add_vote_totals(redacted_tally, extra_row, red_headerlen)
+                    _add_vote_totals(
+                        redacted_tally, extra_row, red_headerlen, redacted_cols
+                    )
                     unexpected = next(red_rows, None)
                     if unexpected is not None:
                         print(
@@ -169,7 +248,10 @@ def verify(original_path: str, redacted_path: str) -> bool:
             tally_mismatches += 1
 
     if row_errors == 0 and tally_mismatches == 0:
-        print(f"Verification passed: {row_idx:,} rows checked, all vote totals match.")
+        known = " known" if redacted_cols else ""
+        print(
+            f"Verification passed: {row_idx:,} rows checked, all{known} vote totals match."
+        )
         return True
     else:
         print(
