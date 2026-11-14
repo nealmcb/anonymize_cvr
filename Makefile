@@ -3,7 +3,9 @@
     test-near-unanimous-fixable test-near-unanimous-unavoidable \
     test-precinct-redaction test-ballot-type-present test-named-style \
     test-no-balancing-skips-borrowing test-no-balancing-near-unanimous \
-    test-blocked-style
+    test-blocked-style test-rare-contest test-rare-contest-only \
+    test-keep-rare-contests test-county-blanked-contest test-rare-ballot-type \
+    test-drop-ballottype test-web
 
 GENERATED = testCases/generated
 OUTPUT = /tmp/anonymize_test_outputs
@@ -19,7 +21,14 @@ test: clean generate \
     test-named-style \
     test-no-balancing-skips-borrowing \
     test-no-balancing-near-unanimous \
-    test-blocked-style
+    test-blocked-style \
+    test-rare-contest \
+    test-rare-contest-only \
+    test-keep-rare-contests \
+    test-county-blanked-contest \
+    test-rare-ballot-type \
+    test-drop-ballottype \
+    test-web
 
 generate:
 	python generate_test_cvrs.py
@@ -140,6 +149,70 @@ test-blocked-style:
 	python verify_redaction.py \
 	    $(GENERATED)/blocked_style.csv \
 	    $(OUTPUT)/blocked_style.csv
+
+test-rare-contest:
+	mkdir -p $(OUTPUT)
+	python anonymize_cvr.py \
+	    $(GENERATED)/rare_contest.csv \
+	    $(OUTPUT)/rare_contest.csv
+	python anonymize_cvr.py --check \
+	    $(OUTPUT)/rare_contest.csv
+	python verify_redaction.py \
+	    $(GENERATED)/rare_contest.csv \
+	    $(OUTPUT)/rare_contest.csv
+
+test-rare-contest-only:
+	mkdir -p $(OUTPUT)
+	python anonymize_cvr.py \
+	    $(GENERATED)/rare_contest_only.csv \
+	    $(OUTPUT)/rare_contest_only.csv
+	python anonymize_cvr.py --check \
+	    $(OUTPUT)/rare_contest_only.csv
+	python verify_redaction.py \
+	    $(GENERATED)/rare_contest_only.csv \
+	    $(OUTPUT)/rare_contest_only.csv
+
+test-keep-rare-contests:
+	mkdir -p $(OUTPUT)
+	python anonymize_cvr.py --keep-rare-contests \
+	    $(GENERATED)/rare_contest.csv \
+	    $(OUTPUT)/rare_contest_keep.csv
+	cmp $(OUTPUT)/rare_contest_keep.csv tests/expected/rare_contest_keep_rare_contests.csv
+
+test-county-blanked-contest:
+	mkdir -p $(OUTPUT)
+	python anonymize_cvr.py \
+	    $(GENERATED)/county_blanked_contest.csv \
+	    $(OUTPUT)/county_blanked_contest.csv
+	python verify_redaction.py \
+	    $(GENERATED)/county_blanked_contest.csv \
+	    $(OUTPUT)/county_blanked_contest.csv
+
+test-rare-ballot-type:
+	mkdir -p $(OUTPUT)
+	python anonymize_cvr.py --check $(GENERATED)/rare_ballot_type.csv
+	python anonymize_cvr.py \
+	    $(GENERATED)/rare_ballot_type.csv \
+	    $(OUTPUT)/rare_ballot_type.csv
+	python anonymize_cvr.py --check \
+	    $(OUTPUT)/rare_ballot_type.csv
+	python verify_redaction.py \
+	    $(GENERATED)/rare_ballot_type.csv \
+	    $(OUTPUT)/rare_ballot_type.csv
+
+test-drop-ballottype:
+	mkdir -p $(OUTPUT)
+	python anonymize_cvr.py --drop-ballottype \
+	    $(GENERATED)/rare_ballot_type.csv \
+	    $(OUTPUT)/rare_ballot_type_dropped.csv
+	python verify_redaction.py \
+	    $(GENERATED)/rare_ballot_type.csv \
+	    $(OUTPUT)/rare_ballot_type_dropped.csv
+
+# The web version (anonymize_cvr.html) against the Python version, on every
+# generated file.  Needs node.
+test-web:
+	node tests/web_matches_python.js
 
 clean:
 	rm -f $(OUTPUT)/*.csv

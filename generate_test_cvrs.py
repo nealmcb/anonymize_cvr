@@ -419,8 +419,10 @@ def _scenario_ballot_type_present() -> Scenario:
     multiple ballot types share the same contest pattern.
     The rare style (President only) has ballot type "1".
 
+    Ballot type "2" is carried by only 8 ballots, so they are treated as rare too.
+
     Expected: leakage warning for ballot types [1, 2] on the President+Senate style;
-    rare President-only style redacted.
+    rare President-only style and the ballot type "2" ballots redacted.
     Command: python anonymize_cvr.py testCases/generated/ballot_type_present.csv /tmp/out.csv
     """
     contests = [
@@ -463,8 +465,10 @@ def _scenario_named_style() -> Scenario:
     share the same contest pattern.
     The rare style (President only) has named style "NS-RARE".
 
+    NS-B is carried by only 8 ballots, so they are treated as rare too.
+
     Expected: leakage warning for named styles [NS-A, NS-B] on the President+Senate
-    style; rare President-only style redacted.
+    style; rare President-only style and the NS-B ballots redacted.
     Command: python anonymize_cvr.py --stylecol 7
              testCases/generated/named_style.csv /tmp/out.csv
     """
@@ -561,6 +565,193 @@ def _scenario_blocked_style() -> Scenario:
     )
 
 
+def _scenario_rare_contest() -> Scenario:
+    """
+    "Fringe District" is present on only 5 cards county-wide, fewer than
+    min_ballots=10, so no aggregate can protect it: it is redacted (Feature A).
+
+    - 2 ballots carry Senate + Fringe.  With Fringe set aside they are an
+      2-ballot Senate-only style, still rare, so they are grouped as usual.
+    - 3 ballots carry President + Senate + Fringe.  With Fringe set aside they
+      join the common President + Senate style and stay visible (CvrNumbers
+      48-50).
+
+    Expected: Fringe columns empty on every ballot row, "Redacted" in the
+    aggregation line; ballots 46-47 redacted; 48-50 visible.
+    Command: python anonymize_cvr.py testCases/generated/rare_contest.csv /tmp/out.csv
+    """
+    contests = [
+        Contest("President", ["Alice", "Bob"]),
+        Contest("Senate", ["Carol", "Dave"]),
+        Contest("Fringe District", ["Xavier", "Yolanda"]),
+    ]
+    ballots = [
+        # Common style President + Senate, 30 ballots (CvrNumbers 1-30).
+        BallotSpec(
+            ["President", "Senate"], {"President": "Alice", "Senate": "Carol"}, count=15
+        ),
+        BallotSpec(
+            ["President", "Senate"], {"President": "Bob", "Senate": "Dave"}, count=15
+        ),
+        # Common style President only, 15 ballots (31-45).
+        BallotSpec(["President"], {"President": "Alice"}, count=8),
+        BallotSpec(["President"], {"President": "Bob"}, count=7),
+        # Senate + Fringe, 2 ballots (46-47): rare even without Fringe.
+        BallotSpec(
+            ["Senate", "Fringe District"],
+            {"Senate": "Carol", "Fringe District": "Xavier"},
+            count=1,
+        ),
+        BallotSpec(
+            ["Senate", "Fringe District"],
+            {"Senate": "Dave", "Fringe District": "Yolanda"},
+            count=1,
+        ),
+        # President + Senate + Fringe, 3 ballots (48-50): rare only because of
+        # Fringe, so they rejoin President + Senate and stay visible.
+        BallotSpec(
+            ["President", "Senate", "Fringe District"],
+            {"President": "Alice", "Senate": "Carol", "Fringe District": "Xavier"},
+            count=2,
+        ),
+        BallotSpec(
+            ["President", "Senate", "Fringe District"],
+            {"President": "Bob", "Senate": "Dave", "Fringe District": "Yolanda"},
+            count=1,
+        ),
+    ]
+    return Scenario(
+        filename="rare_contest.csv",
+        description="Fringe District on 5 cards: redacted; 3 of its ballots stay visible.",
+        election_name="Test: Rare Contest",
+        all_contests=contests,
+        ballots=ballots,
+    )
+
+
+def _scenario_rare_contest_only() -> Scenario:
+    """
+    "Fringe District" is present on only 3 cards, and those cards are rare only
+    because of it.  With Fringe set aside no ballot is rare, so there is no
+    aggregation line to mark it in: the tool adds one that says "Redacted" in
+    the Fringe columns and leaves every other vote column empty.
+    Command: python anonymize_cvr.py testCases/generated/rare_contest_only.csv /tmp/out.csv
+    """
+    contests = [
+        Contest("President", ["Alice", "Bob"]),
+        Contest("Senate", ["Carol", "Dave"]),
+        Contest("Fringe District", ["Xavier", "Yolanda"]),
+    ]
+    ballots = [
+        BallotSpec(
+            ["President", "Senate"], {"President": "Alice", "Senate": "Carol"}, count=15
+        ),
+        BallotSpec(
+            ["President", "Senate"], {"President": "Bob", "Senate": "Dave"}, count=15
+        ),
+        BallotSpec(["President"], {"President": "Alice"}, count=8),
+        BallotSpec(["President"], {"President": "Bob"}, count=7),
+        BallotSpec(
+            ["President", "Senate", "Fringe District"],
+            {"President": "Alice", "Senate": "Carol", "Fringe District": "Xavier"},
+            count=2,
+        ),
+        BallotSpec(
+            ["President", "Senate", "Fringe District"],
+            {"President": "Bob", "Senate": "Dave", "Fringe District": "Yolanda"},
+            count=1,
+        ),
+    ]
+    return Scenario(
+        filename="rare_contest_only.csv",
+        description="Fringe District on 3 cards, no rare ballots otherwise: Redacted line added.",
+        election_name="Test: Rare Contest Only",
+        all_contests=contests,
+        ballots=ballots,
+    )
+
+
+def _scenario_county_blanked_contest() -> Scenario:
+    """
+    "Blanked Measure" is in the header but present on no card, as when a county
+    has emptied a rare contest itself.  It reveals nothing, so the tool leaves it
+    alone: it is not reported, and the aggregation line does not say "Redacted"
+    in its columns.  A rare Senate-only style makes the tool write an output.
+    Command: python anonymize_cvr.py testCases/generated/county_blanked_contest.csv /tmp/out.csv
+    """
+    contests = [
+        Contest("President", ["Alice", "Bob"]),
+        Contest("Senate", ["Carol", "Dave"]),
+        Contest("Blanked Measure", ["Yes", "No"]),
+    ]
+    ballots = [
+        BallotSpec(
+            ["President", "Senate"], {"President": "Alice", "Senate": "Carol"}, count=15
+        ),
+        BallotSpec(
+            ["President", "Senate"], {"President": "Bob", "Senate": "Dave"}, count=15
+        ),
+        BallotSpec(["Senate"], {"Senate": "Carol"}, count=2),
+        BallotSpec(["Senate"], {"Senate": "Dave"}, count=2),
+    ]
+    return Scenario(
+        filename="county_blanked_contest.csv",
+        description="Blanked Measure on no card: left alone, not marked Redacted.",
+        election_name="Test: County-Blanked Contest",
+        all_contests=contests,
+        ballots=ballots,
+    )
+
+
+def _scenario_rare_ballot_type() -> Scenario:
+    """
+    BallotType "BT-9" is carried by only 3 ballots, which share the common
+    President + Senate fingerprint with 22 "BT-1" ballots.  The fingerprint is
+    common, so the rarity check on fingerprints alone would never group them,
+    and they would ship with visible votes next to a label that picks them out
+    (Feature B).  No style is rare.
+
+    Expected: 'BT-9': 3 ballot(s) reported with the ballot-image warning, and
+    redaction needed.  By default those ballots (CvrNumbers 23-25) are treated
+    as rare and aggregated; with --drop-ballottype the BallotType column is
+    dropped instead and they stay visible.
+    Command: python anonymize_cvr.py testCases/generated/rare_ballot_type.csv /tmp/out.csv
+    """
+    contests = [
+        Contest("President", ["Alice", "Bob"]),
+        Contest("Senate", ["Carol", "Dave"]),
+    ]
+    ballots = [
+        BallotSpec(
+            ["President", "Senate"],
+            {"President": "Alice", "Senate": "Carol"},
+            count=12,
+            ballot_type="BT-1",
+        ),
+        BallotSpec(
+            ["President", "Senate"],
+            {"President": "Bob", "Senate": "Dave"},
+            count=10,
+            ballot_type="BT-1",
+        ),
+        BallotSpec(
+            ["President", "Senate"],
+            {"President": "Alice", "Senate": "Dave"},
+            count=3,
+            ballot_type="BT-9",
+        ),
+        BallotSpec(["President"], {"President": "Alice"}, count=8, ballot_type="BT-2"),
+        BallotSpec(["President"], {"President": "Bob"}, count=7, ballot_type="BT-2"),
+    ]
+    return Scenario(
+        filename="rare_ballot_type.csv",
+        description="BallotType BT-9 on 3 ballots of a common fingerprint: reported; dropped on request.",
+        election_name="Test: Rare Ballot Type Label",
+        all_contests=contests,
+        ballots=ballots,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -577,6 +768,10 @@ def main() -> None:
         _scenario_ballot_type_present(),
         _scenario_named_style(),
         _scenario_blocked_style(),
+        _scenario_rare_contest(),
+        _scenario_rare_contest_only(),
+        _scenario_county_blanked_contest(),
+        _scenario_rare_ballot_type(),
     ]
 
     print(f"Writing test CVR files to {OUTPUT_DIR}/")

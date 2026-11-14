@@ -9,16 +9,22 @@ Usage:
     python run_tests.py
 """
 
+import csv
 import glob
 import os
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 GENERATED_DIR = "testCases/generated"
 OUTPUT_DIR = "/tmp/anonymize_test_outputs"
+# Outputs the tool produced before contests too rare to protect were redacted
+# (made with anonymize_cvr.py as of commit 7b70eca).  --keep-rare-contests must
+# reproduce them byte for byte.  Regenerate them if VERSION changes, since it
+# is written into the first row.
+EXPECTED_DIR = "tests/expected"
 
 
 # Python source that blocks tkinter, so that the command line can be shown to
@@ -53,6 +59,8 @@ class TestCase:
     unexpected: List[str] = field(
         default_factory=list
     )  # must not appear in redaction output
+    # Extra checks on the written output file; each returns failure messages.
+    file_checks: List[Callable[[str], List[str]]] = field(default_factory=list)
 
 
 def _run(cmd: List[str]) -> Tuple[int, str]:
@@ -130,6 +138,10 @@ def run_test(tc: TestCase) -> bool:
                 failures.append(
                     "  verify_redaction.py did not say 'Verification passed'"
                 )
+
+            # Step 4: checks on the contents of the written file.
+            for file_check in tc.file_checks:
+                failures.extend(file_check(tc.output_file))
 
     if failures:
         print(f"FAIL  {tc.name}")
@@ -217,6 +229,206 @@ def _no_leftovers(*paths: str) -> List[str]:
     for leftover in glob.glob(f"{OUTPUT_DIR}/*.part"):
         failures.append(f"  temporary file left behind: {leftover}")
     return failures
+
+
+def _list_holds(
+    path: str, exactly: Optional[List[str]] = None, includes: Sequence[str] = ()
+) -> List[str]:
+    """
+    Return failures unless the --redacted-list file at path holds exactly the
+    ImprintedIds given (in any order), or at least those in includes.
+    """
+    if not os.path.exists(path):
+        return [f"  redacted list was not written: {path}"]
+    with open(path, encoding="utf-8") as f:
+        listed = [line.strip() for line in f if line.strip()]
+    failures = []
+    if exactly is not None and sorted(listed) != sorted(exactly):
+        failures.append(f"  redacted list holds {listed}, expected {exactly}")
+    for imprinted_id in includes:
+        if imprinted_id not in listed:
+            failures.append(f"  redacted list lacks {imprinted_id}")
+    return failures
+
+
+def _read_cvr(path: str) -> List[List[str]]:
+    """Read a CVR file into a list of rows (four header rows, then ballots)."""
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.reader(f))
+
+
+def _contest_columns(rows: List[List[str]], contest: str) -> List[int]:
+    """Return the column indices whose contest name (row 2) is contest."""
+    return [i for i, name in enumerate(rows[1]) if name == contest]
+
+
+def _vote_columns(rows: List[List[str]]) -> List[int]:
+    """Return the indices of all vote columns (those with a contest name)."""
+    return [i for i, name in enumerate(rows[1]) if name.strip()]
+
+
+def _ballot_rows(rows: List[List[str]]) -> List[List[str]]:
+    """Return the ballot rows, without the aggregation line."""
+    return [r for r in rows[4:] if r and r[0] != "AGGREGATED"]
+
+
+def _aggregation_line(rows: List[List[str]]) -> Optional[List[str]]:
+    """Return the aggregation line, or None if there is none."""
+    lines = [r for r in rows[4:] if r and r[0] == "AGGREGATED"]
+    return lines[0] if len(lines) == 1 else None
+
+
+def _contest_redacted(contest: str) -> Callable[[str], List[str]]:
+    """
+    Check that contest's columns are empty on every ballot row (no '*' either)
+    and say "Redacted" in the aggregation line.
+    """
+
+    def check(path: str) -> List[str]:
+        rows = _read_cvr(path)
+        cols = _contest_columns(rows, contest)
+        failures = []
+        if not cols:
+            failures.append(f"  contest {contest!r} is missing from the output")
+        for row in _ballot_rows(rows):
+            for col in cols:
+                if row[col] != "":
+                    failures.append(
+                        f"  CvrNumber {row[0]}: {contest!r} cell is {row[col]!r}, not empty"
+                    )
+        agg = _aggregation_line(rows)
+        if agg is None:
+            failures.append("  output has no single aggregation line")
+        else:
+            for col in cols:
+                if agg[col] != "Redacted":
+                    failures.append(
+                        f"  aggregation line has {agg[col]!r} for {contest!r}, "
+                        "not 'Redacted'"
+                    )
+        return failures
+
+    return check
+
+
+def _aggregation_empty_except(contest: str) -> Callable[[str], List[str]]:
+    """Check the aggregation line is empty in every vote column except contest's."""
+
+    def check(path: str) -> List[str]:
+        rows = _read_cvr(path)
+        agg = _aggregation_line(rows)
+        if agg is None:
+            return ["  output has no single aggregation line"]
+        redacted = set(_contest_columns(rows, contest))
+        return [
+            f"  aggregation line has {agg[col]!r} in {rows[1][col]!r}, not empty"
+            for col in _vote_columns(rows)
+            if col not in redacted and agg[col] != ""
+        ]
+
+    return check
+
+
+def _rows_visible(cvr_numbers: List[str]) -> Callable[[str], List[str]]:
+    """Check that the listed ballots are not redacted (no '*' in their votes)."""
+
+    def check(path: str) -> List[str]:
+        rows = _read_cvr(path)
+        by_number = {r[0]: r for r in _ballot_rows(rows)}
+        failures = []
+        for number in cvr_numbers:
+            row = by_number.get(number)
+            if row is None:
+                failures.append(f"  CvrNumber {number} is missing")
+            elif "*" in row:
+                failures.append(
+                    f"  CvrNumber {number} was redacted but should be visible"
+                )
+        return failures
+
+    return check
+
+
+def _rows_redacted(cvr_numbers: List[str]) -> Callable[[str], List[str]]:
+    """Check that the listed ballots are redacted ('*' in their votes)."""
+
+    def check(path: str) -> List[str]:
+        by_number = {r[0]: r for r in _ballot_rows(_read_cvr(path))}
+        return [
+            f"  CvrNumber {number} should be redacted"
+            for number in cvr_numbers
+            if "*" not in by_number.get(number, [])
+        ]
+
+    return check
+
+
+def _no_header_column(name: str) -> Callable[[str], List[str]]:
+    """Check that the output has no header column of this name (row 4)."""
+
+    def check(path: str) -> List[str]:
+        if name in _read_cvr(path)[3]:
+            return [f"  output still has a {name!r} column"]
+        return []
+
+    return check
+
+
+def _has_header_column(name: str) -> Callable[[str], List[str]]:
+    """Check that the output still has a header column of this name (row 4)."""
+
+    def check(path: str) -> List[str]:
+        if name not in _read_cvr(path)[3]:
+            return [f"  output has lost its {name!r} column"]
+        return []
+
+    return check
+
+
+def _no_redacted_anywhere(path: str) -> List[str]:
+    """Check that nothing in the output says "Redacted"."""
+    if any("Redacted" in row for row in _read_cvr(path)):
+        return ["  output has a 'Redacted' entry but no contest should be redacted"]
+    return []
+
+
+def _same_as(reference: str) -> Callable[[str], List[str]]:
+    """Check that the output matches reference byte for byte."""
+
+    def check(path: str) -> List[str]:
+        return [
+            msg.replace(
+                "was modified but should not have been", "differs from " + reference
+            )
+            for msg in _unchanged(path, reference)
+        ]
+
+    return check
+
+
+def _snapshot(directory: str) -> List[str]:
+    """List the files in directory, so a test can show none was written."""
+    return sorted(os.listdir(directory)) if os.path.isdir(directory) else []
+
+
+_SNAPSHOTS: Dict[str, List[str]] = {}
+
+
+def _remember(directory: str) -> None:
+    """Record the files in directory before a command runs."""
+    _SNAPSHOTS[directory] = _snapshot(directory)
+
+
+def _remember_test_dirs() -> None:
+    """Record the files in the output and generated-input directories."""
+    _remember(OUTPUT_DIR)
+    _remember(GENERATED_DIR)
+
+
+def _nothing_written(directory: str) -> List[str]:
+    """Return a failure if a file appeared in directory since _remember()."""
+    added = set(_snapshot(directory)) - set(_SNAPSHOTS.get(directory, []))
+    return [f"  --check wrote a file: {name}" for name in sorted(added)]
 
 
 @dataclass
@@ -489,6 +701,198 @@ def _make_command_tests() -> List[CommandTest]:
             unexpected=["Traceback"],
         ),
         CommandTest(
+            # --check lists the contests too rare to protect, with their card
+            # counts, and writes nothing.
+            name="check_lists_rare_contests",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{GENERATED_DIR}/rare_contest.csv",
+            ],
+            setup=_remember_test_dirs,
+            expected=[
+                "Contests present on fewer than 10 cards (1)",
+                "'Fringe District': 5 card(s)",
+                "These contests would be redacted",
+                "This protects only the CVR.",
+                "Redaction is needed.",
+            ],
+            unexpected=["Traceback", "Output written"],
+            after=lambda: _nothing_written(OUTPUT_DIR)
+            + _nothing_written(GENERATED_DIR),
+        ),
+        CommandTest(
+            # A rare-contest-only file needs redacting even though no style is rare.
+            name="check_rare_contest_only",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{GENERATED_DIR}/rare_contest_only.csv",
+            ],
+            expected=["'Fringe District': 3 card(s)", "Redaction is needed."],
+            unexpected=["Traceback", "Rare ballot styles"],
+        ),
+        CommandTest(
+            # The tool's own output has the rare contest on no card, so a check
+            # of it finds nothing to redact.
+            name="check_own_output_finds_nothing",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{OUTPUT_DIR}/rare_contest.csv",
+            ],
+            expected=["No redaction needed."],
+            unexpected=["Traceback", "Contests present on fewer than"],
+        ),
+        CommandTest(
+            name="check_own_output_finds_nothing_added_line",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{OUTPUT_DIR}/rare_contest_only.csv",
+            ],
+            expected=["No redaction needed."],
+            unexpected=["Traceback", "Contests present on fewer than"],
+        ),
+        CommandTest(
+            # Ballots 46-47 are grouped; 48-50 stay visible but carried Fringe
+            # District, which their images still show.  The list has them all.
+            name="redacted_list_has_visible_rare_contest_ballots",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--force",
+                f"{GENERATED_DIR}/rare_contest.csv",
+                f"{OUTPUT_DIR}/rare_contest_listed.csv",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/rare_contest_listed.txt",
+            ],
+            expected=[
+                "3 ballot(s) carried a redacted contest",
+                "They are in the redacted ballot list too.",
+            ],
+            unexpected=["Traceback"],
+            after=lambda: _list_holds(
+                f"{OUTPUT_DIR}/rare_contest_listed.txt",
+                includes=["1-1-46", "1-1-47", "1-1-48", "1-1-49", "1-1-50"],
+            ),
+        ),
+        CommandTest(
+            # No ballot is redacted here, so the list is only the three visible
+            # ballots that carried Fringe District.
+            name="redacted_list_only_visible_rare_contest_ballots",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--force",
+                f"{GENERATED_DIR}/rare_contest_only.csv",
+                f"{OUTPUT_DIR}/rare_contest_only_listed.csv",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/rare_contest_only_listed.txt",
+            ],
+            expected=["3 ballot(s) carried a redacted contest"],
+            unexpected=["Traceback"],
+            after=lambda: _list_holds(
+                f"{OUTPUT_DIR}/rare_contest_only_listed.txt",
+                exactly=["1-1-46", "1-1-47", "1-1-48"],
+            ),
+        ),
+        CommandTest(
+            # Without --redacted-list the report still counts them, and says
+            # how to get the list.
+            name="visible_rare_contest_ballots_reported_without_list",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--force",
+                f"{GENERATED_DIR}/rare_contest_only.csv",
+                f"{OUTPUT_DIR}/rare_contest_only_nolist.csv",
+            ],
+            expected=[
+                "3 ballot(s) carried a redacted contest",
+                "--redacted-list lists them with the redacted ballots.",
+            ],
+            unexpected=["Traceback"],
+        ),
+        CommandTest(
+            # Redacting the tool's own output again is refused, as before: it
+            # has an aggregation line (and here redacted rows).  Unchanged.
+            name="redact_own_output_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{OUTPUT_DIR}/rare_contest.csv",
+                f"{OUTPUT_DIR}/rare_contest_again.csv",
+            ],
+            expect_failure=True,
+            expected=["cannot re-redact a previously anonymized file"],
+            unexpected=["Traceback"],
+            after=lambda: _no_leftovers(f"{OUTPUT_DIR}/rare_contest_again.csv"),
+        ),
+        CommandTest(
+            # A rare BallotType label on a common fingerprint is reported, with
+            # the warning about ballot images, and makes redaction needed: by
+            # default its ballots are treated as rare.
+            name="check_reports_rare_ballot_type",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                f"{GENERATED_DIR}/rare_ballot_type.csv",
+            ],
+            expected=[
+                "BallotType labels carried by fewer than 10 ballots (1):",
+                "'BT-9': 3 ballot(s)",
+                "These ballots would be treated as rare",
+                "Grouping these ballots protects only the CVR.",
+                "3 ballot(s)  [rare BallotType 'BT-9', style #0]",
+                "Redaction is needed.",
+            ],
+            unexpected=["Traceback", "'BT-1'", "'BT-2'", "No redaction needed."],
+        ),
+        CommandTest(
+            # With --drop-ballottype the remedy is the dropped column, and
+            # redaction is still needed (the column must go).
+            name="check_reports_rare_ballot_type_drop",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                "--drop-ballottype",
+                f"{GENERATED_DIR}/rare_ballot_type.csv",
+            ],
+            expected=[
+                "'BT-9': 3 ballot(s)",
+                "would be dropped from the output (--drop-ballottype)",
+                "Dropping the column protects only the CVR.",
+                "Redaction is needed.",
+            ],
+            unexpected=["Traceback", "Rare ballot styles", "No redaction needed."],
+        ),
+        CommandTest(
+            name="check_reports_rare_named_style",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--check",
+                "--stylecol",
+                "7",
+                f"{GENERATED_DIR}/named_style.csv",
+            ],
+            expected=[
+                "Named-style labels (column 7) carried by fewer than 10 ballots (2):",
+                "'NS-B': 8 ballot(s)",
+                "'NS-RARE': 6 ballot(s)",
+                "Grouping these ballots protects only the CVR.",
+                "Redaction is needed.",
+            ],
+            unexpected=["Traceback", "'NS-A'"],
+        ),
+        CommandTest(
             # With no arguments the window is wanted; without tkinter that has
             # to be a clear message and a non-zero exit, not a traceback.
             name="no_tkinter_no_args_message",
@@ -634,6 +1038,134 @@ def _make_test_cases() -> List[TestCase]:
             unexpected=["Traceback", "WARNING"],
         ),
         TestCase(
+            # Fringe District is on 5 cards: emptied everywhere, "Redacted" in
+            # the aggregation line.  Ballots 46-47 stay rare without it and are
+            # grouped; 48-50 were rare only because of it and stay visible.
+            name="rare_contest",
+            input_file=f"{g}/rare_contest.csv",
+            output_file=f"{o}/rare_contest.csv",
+            expected=[
+                "'Fringe District': 5 card(s)",
+                "These contests are redacted",
+                "Rare ballot styles (1 of 3 total):",
+                "Total ballots in aggregate: 10",
+                "Tally verification passed.",
+            ],
+            unexpected=["Traceback", "WARNING: could not find enough ballots"],
+            file_checks=[
+                _contest_redacted("Fringe District"),
+                _rows_redacted(["46", "47"]),
+                _rows_visible(["48", "49", "50"]),
+            ],
+        ),
+        TestCase(
+            # No ballot is rare once Fringe is set aside, so an aggregation line
+            # is added: "Redacted" for Fringe, 0 everywhere else.
+            name="rare_contest_only",
+            input_file=f"{g}/rare_contest_only.csv",
+            output_file=f"{o}/rare_contest_only.csv",
+            expected=[
+                "'Fringe District': 3 card(s)",
+                "An aggregation line standing for no ballots will be added",
+                "Tally verification passed.",
+            ],
+            unexpected=["Traceback", "Rare ballot styles", "WARNING"],
+            file_checks=[
+                _contest_redacted("Fringe District"),
+                _aggregation_empty_except("Fringe District"),
+                _rows_visible(["46", "47", "48"]),
+            ],
+        ),
+        TestCase(
+            # --keep-rare-contests reproduces the output from before the change.
+            name="keep_rare_contests_unchanged",
+            input_file=f"{g}/rare_contest.csv",
+            output_file=f"{o}/rare_contest_keep.csv",
+            redact_flags=["--keep-rare-contests"],
+            check_flags=["--keep-rare-contests"],
+            expected=[
+                "WARNING: --keep-rare-contests was given",
+                "Tally verification passed.",
+            ],
+            unexpected=["Traceback"],
+            file_checks=[
+                _same_as(f"{EXPECTED_DIR}/rare_contest_keep_rare_contests.csv"),
+            ],
+        ),
+        TestCase(
+            name="keep_rare_contests_unchanged_no_rare_ballots",
+            input_file=f"{g}/rare_contest_only.csv",
+            output_file=f"{o}/rare_contest_only_keep.csv",
+            redact_flags=["--keep-rare-contests"],
+            check_flags=["--keep-rare-contests"],
+            expected=["Tally verification passed."],
+            unexpected=["Traceback"],
+            file_checks=[
+                _same_as(f"{EXPECTED_DIR}/rare_contest_only_keep_rare_contests.csv"),
+            ],
+        ),
+        TestCase(
+            # A contest present on no card (a county emptied it) is left alone.
+            name="county_blanked_contest_left_alone",
+            input_file=f"{g}/county_blanked_contest.csv",
+            output_file=f"{o}/county_blanked_contest.csv",
+            expected=["Tally verification passed."],
+            unexpected=["Traceback", "Contests present on fewer than"],
+            file_checks=[_no_redacted_anywhere],
+        ),
+        TestCase(
+            # By default the 3 ballots with the rare label BT-9 (CvrNumbers
+            # 23-25) are treated as rare: aggregated, votes starred, the
+            # BallotType column kept.
+            name="rare_ballot_type_aggregated",
+            input_file=f"{g}/rare_ballot_type.csv",
+            output_file=f"{o}/rare_ballot_type.csv",
+            expected=[
+                "'BT-9': 3 ballot(s)",
+                "These ballots are treated as rare",
+                "Grouping these ballots protects only the CVR.",
+                "Tally verification passed.",
+            ],
+            unexpected=["Traceback"],
+            file_checks=[
+                _rows_redacted(["23", "24", "25"]),
+                _has_header_column("BallotType"),
+            ],
+        ),
+        TestCase(
+            # With --drop-ballottype the column goes instead, and the BT-9
+            # ballots stay visible: their contest pattern is common.
+            name="drop_ballottype",
+            input_file=f"{g}/rare_ballot_type.csv",
+            output_file=f"{o}/rare_ballot_type_dropped.csv",
+            redact_flags=["--drop-ballottype"],
+            expected=[
+                "'BT-9': 3 ballot(s)",
+                "dropped from the output (--drop-ballottype)",
+                "Dropping the column protects only the CVR.",
+                "Output written to",
+            ],
+            unexpected=["Traceback", "Rare ballot styles"],
+            file_checks=[
+                _no_header_column("BallotType"),
+                _rows_visible(["23", "24", "25"]),
+                _no_redacted_anywhere,
+            ],
+        ),
+        TestCase(
+            # The same for a --stylecol column, alongside a rare style.
+            name="drop_ballottype_named_style",
+            input_file=f"{g}/named_style.csv",
+            output_file=f"{o}/named_style_dropped.csv",
+            redact_flags=["--stylecol", "7", "--drop-ballottype"],
+            expected=["'NS-RARE': 6 ballot(s)", "Tally verification passed."],
+            unexpected=["Traceback"],
+            file_checks=[
+                _no_header_column("BallotType"),
+                _no_header_column("NamedStyle"),
+            ],
+        ),
+        TestCase(
             name="blocked_style",
             input_file=f"{g}/blocked_style.csv",
             output_file=f"{o}/blocked_style.csv",
@@ -676,6 +1208,20 @@ def main() -> None:
             passed += 1
         else:
             failed += 1
+
+    # The web version's JavaScript against this one, on the generated files.
+    if shutil.which("node") is None:
+        print("SKIP  web_matches_python (node is not installed)")
+    elif run_command_test(
+        CommandTest(
+            name="web_matches_python",
+            cmd=["node", "tests/web_matches_python.js"],
+            expected=["Web cross-check:", " 0 failed."],
+        )
+    ):
+        passed += 1
+    else:
+        failed += 1
 
     print()
     print(f"Results: {passed} passed, {failed} failed.")
