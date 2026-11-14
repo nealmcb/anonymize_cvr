@@ -1277,15 +1277,16 @@ def _added_aggregate_row(db: CvrDatabase) -> List[str]:
     contests "Redacted": no ballot was rare enough to need grouping.
 
     It has the identifier fields an aggregation line always has (CvrNumber and
-    BallotType "AGGREGATED", the other identifiers blank) and 0 in every vote
-    column; pass 3 writes "Redacted" over the set-aside contests' columns.  It
-    stands for no ballots.
+    BallotType "AGGREGATED", the other identifiers blank) and every vote column
+    empty; pass 3 writes "Redacted" over the set-aside contests' columns.  It
+    stands for no ballots, so it carries no contest, and an empty cell says so
+    as it does on a ballot row (a 0 would say a ballot carries the contest).
     """
     result = [""] * db.headerlen
     result[0] = "AGGREGATED"
     if db.ballot_type_idx is not None:
         result[db.ballot_type_idx] = "AGGREGATED"
-    result.extend("0" for _ in range(db.headerlen, len(db.contests)))
+    result.extend("" for _ in range(db.headerlen, len(db.contests)))
     return result
 
 

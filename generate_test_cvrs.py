@@ -634,7 +634,7 @@ def _scenario_rare_contest_only() -> Scenario:
     "Fringe District" is present on only 3 cards, and those cards are rare only
     because of it.  With Fringe set aside no ballot is rare, so there is no
     aggregation line to mark it in: the tool adds one that says "Redacted" in
-    the Fringe columns and 0 in every other vote column.
+    the Fringe columns and leaves every other vote column empty.
     Command: python anonymize_cvr.py testCases/generated/rare_contest_only.csv /tmp/out.csv
     """
     contests = [
@@ -675,8 +675,8 @@ def _scenario_county_blanked_contest() -> Scenario:
     """
     "Blanked Measure" is in the header but present on no card, as when a county
     has emptied a rare contest itself.  It reveals nothing, so the tool leaves it
-    alone: it is not reported, and the aggregation line has 0 in its columns,
-    not "Redacted".  A rare Senate-only style makes the tool write an output.
+    alone: it is not reported, and the aggregation line does not say "Redacted"
+    in its columns.  A rare Senate-only style makes the tool write an output.
     Command: python anonymize_cvr.py testCases/generated/county_blanked_contest.csv /tmp/out.csv
     """
     contests = [

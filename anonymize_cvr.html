@@ -2716,13 +2716,13 @@ function redactBallotRow(row, db, redactOnPrecinct) {
 }
 
 // The aggregation line for a file that needs one only to mark set-aside
-// contests "Redacted": the identifier fields an aggregation line has, and 0 in
-// every vote column.  It stands for no ballots.
+// contests "Redacted": the identifier fields an aggregation line has, and every
+// vote column empty.  It stands for no ballots, so it carries no contest.
 function addedAggregateRow(db) {
     const result = new Array(db.headerlen).fill('');
     result[0] = 'AGGREGATED';
     if (db.ballotTypeIdx !== null) result[db.ballotTypeIdx] = 'AGGREGATED';
-    for (let i = db.headerlen; i < db.numCols; i++) result.push('0');
+    for (let i = db.headerlen; i < db.numCols; i++) result.push('');
     return result;
 }
 
