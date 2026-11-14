@@ -996,22 +996,24 @@ def _build_aggregate_row(
     if db.ballot_type_idx is not None:
         result[db.ballot_type_idx] = "AGGREGATED"
 
-    # Sum vote columns across all ballots.
+    # Sum vote columns across all ballots.  A column that is empty on every
+    # ballot in the group stays empty, as on a ballot row: none of these
+    # ballots carries the contest.  A 0 would say some of them carry it and
+    # left it unvoted.
     num_cols = len(ballots[0])
     for col_idx in range(db.headerlen, num_cols):
-        no_votes = True     # distinguish between no votes and 0 votes
+        if all(not ballot[col_idx].strip() for ballot in ballots):
+            result.append("")
+            continue
         total = 0.0
         for ballot in ballots:
             val = ballot[col_idx].strip()
             if val and val.replace(".", "").replace("-", "").isdigit():
                 try:
                     total += float(val)
-                    no_votes = False
                 except ValueError:
                     pass
-        if (no_votes):
-            result.append("")
-        elif total == int(total):
+        if total == int(total):
             result.append(str(int(total)))
         else:
             result.append(str(total))
