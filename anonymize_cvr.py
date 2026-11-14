@@ -999,15 +999,19 @@ def _build_aggregate_row(
     # Sum vote columns across all ballots.
     num_cols = len(ballots[0])
     for col_idx in range(db.headerlen, num_cols):
+        no_votes = True     # distinguish between no votes and 0 votes
         total = 0.0
         for ballot in ballots:
             val = ballot[col_idx].strip()
             if val and val.replace(".", "").replace("-", "").isdigit():
                 try:
                     total += float(val)
+                    no_votes = False
                 except ValueError:
                     pass
-        if total == int(total):
+        if (no_votes):
+            result.append("")
+        elif total == int(total):
             result.append(str(int(total)))
         else:
             result.append(str(total))
