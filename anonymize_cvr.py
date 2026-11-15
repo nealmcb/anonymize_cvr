@@ -2680,9 +2680,8 @@ def execute_check(
 
         if redact_on_precinct and db.precinct_portion_idx is None:
             print(
-                "WARNING: --redact-on-precinct was requested but the CVR has no "
-                "PrecinctPortion column. The option will have no effect.",
-                file=sys.stderr,
+                "Note: the CVR has no PrecinctPortion column, so there are no "
+                "precincts to protect."
             )
 
         print("*** Pass 1: Looking for rare ballot styles.")
@@ -2751,9 +2750,8 @@ def execute_redact(
 
         if redact_on_precinct and db.precinct_portion_idx is None:
             print(
-                "WARNING: --redact-on-precinct was requested but the CVR has no "
-                "PrecinctPortion column. The option will have no effect.",
-                file=sys.stderr,
+                "Note: the CVR has no PrecinctPortion column, so there are no "
+                "precincts to protect."
             )
 
         print("*** Pass 1: Looking for rare ballot styles.")
@@ -2839,14 +2837,33 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Check mode: report whether redaction is needed without writing output.",
     )
-    parser.add_argument(
+    precinct = parser.add_mutually_exclusive_group()
+    precinct.add_argument(
         "--redact-on-precinct",
+        dest="redact_on_precinct",
         action="store_true",
         help=(
-            "Treat precincts with fewer than --min-ballots ballots as rare "
-            "and aggregate them, instead of simply blanking the PrecinctPortion column."
+            "The default. Keep the PrecinctPortion column, and treat a ballot "
+            "style with fewer than --min-ballots ballots in a precinct portion as "
+            "rare, so those ballots are grouped into the aggregate and listed by "
+            "--redacted-list. The precinct portion is read from each ballot's "
+            "header or barcode, and may be a real precinct, a split or a ballot "
+            "style, depending on how the county set up the election."
         ),
     )
+    precinct.add_argument(
+        "--no-redact-on-precinct",
+        dest="redact_on_precinct",
+        action="store_false",
+        help=(
+            "Remove the PrecinctPortion column instead, and judge rarity by "
+            "ballot style alone. Use only if you will never release ballot images "
+            "that show precinct information (on the ballot's header or barcode): "
+            "a ballot whose style is rare only within its precinct portion stays "
+            "visible and is not listed by --redacted-list."
+        ),
+    )
+    parser.set_defaults(redact_on_precinct=True)
     parser.add_argument(
         "--min-ballots",
         type=int,
@@ -2975,7 +2992,7 @@ class CvrAnonymizerApp:
         self.root.resizable(True, True)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self.config_redact_on_precinct: bool = False
+        self.config_redact_on_precinct: bool = True
         self.config_no_contest_balancing: bool = False
         self.config_min_ballots: int = MIN_BALLOTS_DEFAULT
         self.config_style_col: Optional[int] = None
@@ -3054,8 +3071,8 @@ class CvrAnonymizerApp:
         ).pack(pady=(15, 5))
 
         parts = [f"Min ballots: {self.config_min_ballots}"]
-        if self.config_redact_on_precinct:
-            parts.append("Redact on precinct: yes")
+        if not self.config_redact_on_precinct:
+            parts.append("Redact on precinct: no (precinct column removed)")
         if self.config_no_contest_balancing:
             parts.append("No contest balancing")
         if self.config_style_col is not None:
@@ -3095,9 +3112,11 @@ class CvrAnonymizerApp:
         tk.Checkbutton(
             frame,
             text=(
-                "Redact on Precinct\n"
-                "Treat [ballot style, precinct] combinations with fewer than\n"
-                "the minimum ballots as rare, in addition to rare styles alone."
+                "Redact on Precinct (recommended)\n"
+                "Keep the precinct column, and treat [ballot style, precinct]\n"
+                "combinations with fewer than the minimum ballots as rare.\n"
+                "Uncheck only if you will never release ballot images that show\n"
+                "precinct information (on the ballot's header or barcode)."
             ),
             variable=self._redact_on_precinct_var,
             justify=tk.LEFT,
@@ -3257,7 +3276,7 @@ class CvrAnonymizerApp:
         )
         self._add_file_row(
             file_frame,
-            "Redacted Ballot List\n(optional):",
+            "Redacted Ballot List\n(recommended):",
             self._redact_list_var,
             lambda: self._browse_save(
                 self._redact_list_var, "Save redacted ballot list as", ".txt"

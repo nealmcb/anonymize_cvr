@@ -1970,8 +1970,10 @@ Runs entirely in your browser — no file is uploaded to any server.</p>
 
 <div class="options">
     <label>
-        <input type="checkbox" id="redactOnPrecinct">
-        Redact on precinct &mdash; treat rare (style, precinct) combinations as rare styles
+        <input type="checkbox" id="redactOnPrecinct" checked>
+        Redact on precinct (recommended) &mdash; keep the precinct column and treat rare (style,
+        precinct) combinations as rare styles; uncheck only if you will never release ballot
+        images that show precinct information (on the ballot's header or barcode)
     </label>
     <label>
         <input type="checkbox" id="noContestBalancing">
