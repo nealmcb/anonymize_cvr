@@ -96,8 +96,31 @@ The wheel is built reproducibly from the tag, so anyone can rebuild it and compa
 - A pending trusted publisher for the project `anonymize_cvr`: owner `nealmcb`, repository
   `anonymize_cvr`, workflow `release.yml`, environment `pypi`. The `pypi` environment on GitHub
   requires a maintainer's approval before the publishing job runs.
-- The same on https://test.pypi.org for a trial release first.
+- The same on https://test.pypi.org (a separate account) with environment `testpypi`, for trial
+  runs. The `testpypi` environment on GitHub also requires a maintainer's approval, and allows
+  the branches `release-trial` and `main`.
 - No API token is stored anywhere; old tokens for other projects are not used for this one.
+
+## Trial run
+
+Uploading a version to PyPI can't be undone: the version number can never be used again, and a
+broken release can only be yanked and replaced by the next version. Before tagging, try the
+whole workflow on TestPyPI:
+
+```
+git push origin HEAD:release-trial
+```
+
+(Or "Run workflow" on the Actions page, from `main`.) The trial run tests and builds as a
+release would, but under the version `X.Y.Z.devN`, N being the workflow's run number, so each
+trial gets a new version. After approval of the `testpypi` environment it publishes the wheel to
+TestPyPI. Install it from there to try it, on Windows for example:
+
+```
+pipx install --index-url https://test.pypi.org/simple/ --pip-args=--pre anonymize_cvr
+```
+
+It makes no GitHub Release and doesn't touch PyPI.
 
 ## Release steps
 
@@ -121,7 +144,8 @@ The wheel is built reproducibly from the tag, so anyone can rebuild it and compa
 3. **The tag starts the release workflow** (`.github/workflows/release.yml`). It checks that the
    tag is on `main` and matches the version in both tools; runs the tests; builds the wheel;
    writes `SHA256SUMS`; attests each file; waits for a maintainer to approve the `pypi`
-   environment, then publishes the wheel to PyPI through trusted publishing; and creates a draft
+   environment (before approving, download the `wheel` artifact from the run and check it), then
+   publishes the wheel to PyPI through trusted publishing; and creates a draft
    GitHub Release with the files.
 4. **Sign and publish.** A maintainer downloads `SHA256SUMS` from the draft, checks it, signs it
    with Sigstore, adds the signature and certificate to the draft, replaces the draft's notes

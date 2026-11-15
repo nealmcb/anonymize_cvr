@@ -1,5 +1,10 @@
 # Release workflow: see docs/RELEASE.md.
 #
+# A trial run (a push to the branch release-trial, or "Run workflow" on the Actions page) does the
+# same tests, build and attestations under a trial version X.Y.Z.devN (N = the run number), and
+# publishes the wheel to TestPyPI instead, after a maintainer approves the "testpypi" environment.
+# It makes no GitHub Release and touches nothing on PyPI.
+#
 # Runs when a maintainer pushes a tag vX.Y.Z on main. It tests, builds the wheel and the release
 # files, attests each file (build provenance in Sigstore's public log), publishes the wheel to
 # PyPI through trusted publishing once a maintainer approves the "pypi" environment, and creates a
@@ -15,6 +20,8 @@ name: Release
 on:
   push:
     tags: ["v*.*.*"]
+    branches: [release-trial]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -53,6 +60,7 @@ jobs:
           python-version: "3.12"
 
       - name: Check that the tag is on main and matches the version in both tools
+        if: github.ref_type == 'tag'
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -65,7 +73,19 @@ jobs:
           [ "$py" = "$want" ] && [ "$html" = "$want" ] \
             || { echo "::error::version mismatch"; exit 1; }
 
-      - name: Build the wheel (reproducibly, from the tagged commit's time)
+      - name: For a trial run, check both tools agree and mark the version X.Y.Z.devN
+        if: github.ref_type != 'tag'
+        run: |
+          py=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' anonymize_cvr.py)
+          html=$(sed -n "s/^const VERSION = '\(.*\)';.*/\1/p" anonymize_cvr.html)
+          echo "anonymize_cvr.py $py, anonymize_cvr.html $html"
+          [ "$py" = "$html" ] || { echo "::error::version mismatch"; exit 1; }
+          trial="$py.dev$GITHUB_RUN_NUMBER"
+          sed -i "s/^VERSION = \".*\"$/VERSION = \"$trial\"/" anonymize_cvr.py
+          sed -i "s/^const VERSION = '.*';/const VERSION = '$trial';/" anonymize_cvr.html
+          echo "trial version $trial"
+
+      - name: Build the wheel (reproducibly, from the commit's time)
         run: |
           export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           python -m pip install build==1.6.1
@@ -117,8 +137,30 @@ jobs:
           path: wheel/
           if-no-files-found: error
 
+  publish-testpypi:
+    needs: build
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-24.04
+    # The "testpypi" environment requires a maintainer's approval, and it is the environment named
+    # in TestPyPI's trusted publisher for anonymize_cvr.
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/anonymize_cvr/
+    permissions:
+      id-token: write # for trusted publishing and TestPyPI's attestations
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wheel
+          path: wheel/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: wheel/
+          repository-url: https://test.pypi.org/legacy/
+
   publish-pypi:
     needs: build
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     # The "pypi" environment requires a maintainer's approval before this job runs, and it is the
     # environment named in PyPI's trusted publisher for anonymize_cvr.
