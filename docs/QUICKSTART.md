@@ -1,7 +1,7 @@
 # Quick start for county election offices
 
 How to redact your cast vote record (CVR) with `anonymize_cvr` before releasing it. It takes a
-few minutes. There is also a demonstration video: VIDEO_LINK
+few minutes.
 
 ## 1. Make sure Python is installed (once)
 

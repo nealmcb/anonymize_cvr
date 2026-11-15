@@ -135,7 +135,7 @@ The quick start covers: installing Python on Windows if
 it is missing; downloading `anonymize_cvr.py` from the release page (a fixed link for each
 version); optionally checking its SHA-256; starting it; which options to leave as they are
 (all of them); keeping the aggregation line; saving the report and the redacted ballot list; and
-what to do if Windows warns about the download. It links the demonstration video.
+what to do if Windows warns about the download.
 
 ## Open decisions
 
