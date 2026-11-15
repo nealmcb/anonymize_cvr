@@ -42,7 +42,14 @@ wrote it.
 - The options are grouped: "Protections" (contest balancing, rare contests), then "Precinct
   portions and ballot types", each a pair of choices, grouping rare ballots (recommended, and
   selected) or removing the column.
-- The redacted ballot list is marked recommended.
+- **The window names the outputs and saves a report.** It asks for a folder (the input's, unless
+  changed) instead of two file names, shows the three files it will write
+  (`<input>-redacted.csv`, `<input>-redacted-ballots.txt`, `<input>-report.txt`), and writes all
+  three, asking before replacing any. The report records the version, the time, the input's name
+  and SHA-256, the options, the result, the files written and everything the run printed.
+  `--report FILE` writes the same report from the command line.
+- Messages that name a file put its path last, alone on its own line, with no punctuation after
+  it, so it can be copied whole.
 
 ### Safety of files
 

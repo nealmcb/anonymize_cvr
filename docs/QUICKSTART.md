@@ -49,10 +49,10 @@ Under **Protections**:
 - **Keep rare contests:** leave it *unchecked*. Checking it offers weaker voter protections.
 
 Under **Precinct portions and ballot types**, each ballot's header or barcode records its precinct
-portion and ballot type, so ballot images show them even when the CVR doesn't. Keep the first
+portion and ballot type, so ballot images show them even when the CVR doesn't. Keep the default
 choice in each pair:
 
-- **Precinct portions:** "Group ballots rare within their precinct portion". The tool keeps the
+- **Precinct portions:** "Group rare ballots within their precinct portion". The tool keeps the
   precinct column and groups the ballots that would stand out within it. Choose "Remove the
   precinct column" only if you will never release ballot images with precinct information.
 - **Ballot types:** "Group ballots whose ballot type is rare". Choose "Remove the ballot-type
@@ -69,19 +69,21 @@ Click **(2) Produce Redacted CVR**, then:
 
 1. **Input CVR File:** choose the CVR exported from the voting system, as a CSV file. The tool
    only reads it; it never changes it.
-2. **Output CVR File:** click **Browse...**, pick the folder to save in, and type a new name for
-   the redacted CVR, such as your export's name with `-redacted` added.
-3. **Redacted Ballot List** (recommended): the same way, type a new name, such as your export's
-   name with `-image-list` added. It lists the ballots whose images need redacting if you ever
-   release ballot images; keep it with the redacted CVR even if you don't plan to.
-4. Click **Run Redaction**.
+2. **Save into Folder:** the input's folder is filled in; choose another with **Browse...** if
+   you like. The window shows the three files it will write there, named after your export:
+   - `<export>-redacted.csv`: the redacted CVR;
+   - `<export>-redacted-ballots.txt`: the ballots whose images need redacting if you ever
+     release ballot images. Keep it with the redacted CVR even if you don't plan to;
+   - `<export>-report.txt`: a record of the run: the version, the options, your export's
+     SHA-256, and everything the tool found and did.
+3. Click **Run Redaction**. If any of the three files is already there, the tool asks before
+   replacing it.
 
-The status box reports what the tool found and did, and ends by saying the totals check passed.
-Save that report: drag over all the text in the status box to select it, press Ctrl+C, and paste
-it into a text file kept with the redacted CVR. It records which version you ran and what it
-found.
+The status box shows the same report as it runs, ends by saying the totals check passed, and
+names each file written. Keep all three files together.
 
-If it says no redaction is needed, nothing in your CVR needed redacting, and it writes no file.
+If it says no redaction is needed, nothing in your CVR needed redacting, and it writes only the
+report.
 Your export, without its CountingGroup column (as uploaded to the RLA tool), needs no redaction.
 
 ## 6. Excel caution

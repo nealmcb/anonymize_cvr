@@ -39,14 +39,20 @@ balancing on (the default) the tool borrows enough common ballots to prevent thi
 is not recommended.
 
 **Ballot images.** Redacting the CVR does not redact ballot images. If you release images, the
-redacted ballot list (recommended in the window, `--redacted-list` on the command line) includes
+redacted ballot list (always written by the window, `--redacted-list` on the command line) includes
 every ballot whose image needs redacting: the grouped ballots, and visible ballots that carried a
 redacted contest. A label printed on the ballot (a
 ballot-style code or precinct number) carried by only a few ballots needs redacting on the images
 too.
 
 **The options window** groups the protections first, then offers precinct portions and ballot
-types as a pair of choices each. Keep the first choice in each pair.
+types as a pair of choices each. Keep the default choice in each pair.
+
+**Files named for you, and a saved report.** The window asks only for a folder (your export's,
+unless you choose another) and writes three files named after your export: the redacted CVR, the
+list of ballots whose images need redacting, and a report of the run with the version, the
+options, your export's SHA-256 and everything the tool found. It asks before replacing any of
+them.
 
 **Safer with your files.** The tool never writes over the CVR it is reading, never replaces an
 existing file without asking, and never leaves a half-written file if something goes wrong.
