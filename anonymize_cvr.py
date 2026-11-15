@@ -2988,7 +2988,7 @@ class CvrAnonymizerApp:
 
         self.root = root
         self.root.title("CVR Anonymizer")
-        self.root.geometry("700x640")
+        self.root.geometry("760x700")
         self.root.resizable(True, True)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -3080,7 +3080,7 @@ class CvrAnonymizerApp:
         if self.config_keep_rare_contests:
             parts.append("Keep rare contests")
         if self.config_drop_ballottype:
-            parts.append("Drop BallotType")
+            parts.append("Ballot-type column removed")
         tk.Label(
             self.root,
             text="  |  ".join(parts),
@@ -3105,23 +3105,16 @@ class CvrAnonymizerApp:
 
         frame = tk.Frame(self.root, padx=20, pady=5)
         frame.pack(fill=tk.X)
+        bold = ("TkDefaultFont", 10, "bold")
+        note = ("TkDefaultFont", 9)
 
-        self._redact_on_precinct_var = tk.BooleanVar(
-            value=self.config_redact_on_precinct
-        )
-        tk.Checkbutton(
+        tk.Label(frame, text="Protections", font=bold).pack(anchor=tk.W)
+        tk.Label(
             frame,
-            text=(
-                "Redact on Precinct (recommended)\n"
-                "Keep the precinct column, and treat [ballot style, precinct]\n"
-                "combinations with fewer than the minimum ballots as rare.\n"
-                "Uncheck only if you will never release ballot images that show\n"
-                "precinct information (on the ballot's header or barcode)."
-            ),
-            variable=self._redact_on_precinct_var,
-            justify=tk.LEFT,
-            anchor=tk.W,
-        ).pack(anchor=tk.W, pady=(5, 12))
+            text="Leave these unchecked: checking either one weakens voter privacy.",
+            fg="gray",
+            font=note,
+        ).pack(anchor=tk.W, pady=(0, 4))
 
         self._no_contest_balancing_var = tk.BooleanVar(
             value=self.config_no_contest_balancing
@@ -3135,7 +3128,7 @@ class CvrAnonymizerApp:
             variable=self._no_contest_balancing_var,
             justify=tk.LEFT,
             anchor=tk.W,
-        ).pack(anchor=tk.W, pady=(0, 12))
+        ).pack(anchor=tk.W, pady=(0, 6))
 
         self._keep_rare_contests_var = tk.BooleanVar(
             value=self.config_keep_rare_contests
@@ -3149,20 +3142,68 @@ class CvrAnonymizerApp:
             variable=self._keep_rare_contests_var,
             justify=tk.LEFT,
             anchor=tk.W,
-        ).pack(anchor=tk.W, pady=(0, 12))
+        ).pack(anchor=tk.W, pady=(0, 10))
 
-        self._drop_ballottype_var = tk.BooleanVar(value=self.config_drop_ballottype)
-        tk.Checkbutton(
+        tk.Label(frame, text="Precinct portions and ballot types", font=bold).pack(
+            anchor=tk.W
+        )
+        tk.Label(
             frame,
             text=(
-                "Drop the BallotType column (and the style column, if set)\n"
-                "Ballots with a rare label are otherwise grouped as rare ballots;\n"
-                "this drops the label from the CVR instead (not from ballot images)."
+                "Each ballot's header or barcode records its precinct portion and "
+                "ballot type,\nso released ballot images show them even if the CVR "
+                "doesn't. Keep the first\nchoice in each pair unless you will never "
+                "release ballot images that show them."
+            ),
+            fg="gray",
+            font=note,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        self._redact_on_precinct_var = tk.BooleanVar(
+            value=self.config_redact_on_precinct
+        )
+        tk.Label(frame, text="Precinct portions:").pack(anchor=tk.W)
+        tk.Radiobutton(
+            frame,
+            text=(
+                "Group ballots rare within their precinct portion "
+                "(keeps the precinct column; recommended)"
+            ),
+            variable=self._redact_on_precinct_var,
+            value=True,
+            anchor=tk.W,
+        ).pack(anchor=tk.W, padx=(16, 0))
+        tk.Radiobutton(
+            frame,
+            text="Remove the precinct column (images still show the precinct)",
+            variable=self._redact_on_precinct_var,
+            value=False,
+            anchor=tk.W,
+        ).pack(anchor=tk.W, padx=(16, 0), pady=(0, 6))
+
+        self._drop_ballottype_var = tk.BooleanVar(value=self.config_drop_ballottype)
+        tk.Label(frame, text="Ballot types:").pack(anchor=tk.W)
+        tk.Radiobutton(
+            frame,
+            text=(
+                "Group ballots whose ballot type is rare "
+                "(keeps the ballot-type column; recommended)"
             ),
             variable=self._drop_ballottype_var,
-            justify=tk.LEFT,
+            value=False,
             anchor=tk.W,
-        ).pack(anchor=tk.W, pady=(0, 12))
+        ).pack(anchor=tk.W, padx=(16, 0))
+        tk.Radiobutton(
+            frame,
+            text=(
+                "Remove the ballot-type column, and the style column if set "
+                "(images still show the type)"
+            ),
+            variable=self._drop_ballottype_var,
+            value=True,
+            anchor=tk.W,
+        ).pack(anchor=tk.W, padx=(16, 0), pady=(0, 10))
 
         min_row = tk.Frame(frame)
         min_row.pack(anchor=tk.W, pady=4)
