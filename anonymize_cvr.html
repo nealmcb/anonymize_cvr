@@ -1987,15 +1987,15 @@ Runs entirely in your browser — no file is uploaded to any server.</p>
     </label>
     <h3>Precinct portions and ballot types</h3>
     <p class="note">Each ballot's header or barcode records its precinct portion and ballot
-    type, so released ballot images show them even if the CVR doesn't. Keep the first choice in
+    type, so released ballot images show them even if the CVR doesn't. Keep the default choice in
     each pair unless you will never release ballot images that show them.</p>
     <fieldset>
         <legend>Precinct portions</legend>
         <label><input type="radio" name="precinctMode" id="redactOnPrecinct" checked>
-            Group ballots rare within their precinct portion (keeps the precinct column;
+            Group rare ballots within their precinct portion (keeps the precinct column;
             recommended)</label>
         <label><input type="radio" name="precinctMode" id="removePrecinct">
-            Remove the precinct column (images still show the precinct)</label>
+            Remove the precinct column (not recommended)</label>
     </fieldset>
     <fieldset>
         <legend>Ballot types</legend>
@@ -2003,7 +2003,7 @@ Runs entirely in your browser — no file is uploaded to any server.</p>
             Group ballots whose ballot type is rare (keeps the ballot-type column;
             recommended)</label>
         <label><input type="radio" name="ballotTypeMode" id="dropBallotType">
-            Remove the ballot-type column (images still show the type)</label>
+            Remove the ballot-type column (not recommended)</label>
     </fieldset>
     <label>
         Minimum ballots per style:

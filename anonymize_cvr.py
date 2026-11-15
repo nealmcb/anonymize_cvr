@@ -2845,8 +2845,8 @@ def parse_args() -> argparse.Namespace:
         help=(
             "The default. Keep the PrecinctPortion column, and treat a ballot "
             "style with fewer than --min-ballots ballots in a precinct portion as "
-            "rare, so those ballots are grouped into the aggregate and listed by "
-            "--redacted-list. The precinct portion is read from each ballot's "
+            "rare, so those ballots are redacted. The precinct portion is read "
+            "from each ballot's "
             "header or barcode, and may be a real precinct, a split or a ballot "
             "style, depending on how the county set up the election."
         ),
@@ -3152,7 +3152,7 @@ class CvrAnonymizerApp:
             text=(
                 "Each ballot's header or barcode records its precinct portion and "
                 "ballot type,\nso released ballot images show them even if the CVR "
-                "doesn't. Keep the first\nchoice in each pair unless you will never "
+                "doesn't. Keep the default\nchoice in each pair unless you will never "
                 "release ballot images that show them."
             ),
             fg="gray",
@@ -3167,7 +3167,7 @@ class CvrAnonymizerApp:
         tk.Radiobutton(
             frame,
             text=(
-                "Group ballots rare within their precinct portion "
+                "Group rare ballots within their precinct portion "
                 "(keeps the precinct column; recommended)"
             ),
             variable=self._redact_on_precinct_var,
@@ -3176,7 +3176,7 @@ class CvrAnonymizerApp:
         ).pack(anchor=tk.W, padx=(16, 0))
         tk.Radiobutton(
             frame,
-            text="Remove the precinct column (images still show the precinct)",
+            text="Remove the precinct column (not recommended)",
             variable=self._redact_on_precinct_var,
             value=False,
             anchor=tk.W,
@@ -3198,7 +3198,7 @@ class CvrAnonymizerApp:
             frame,
             text=(
                 "Remove the ballot-type column, and the style column if set "
-                "(images still show the type)"
+                "(not recommended)"
             ),
             variable=self._drop_ballottype_var,
             value=True,
