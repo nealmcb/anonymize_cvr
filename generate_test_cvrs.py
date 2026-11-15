@@ -361,7 +361,7 @@ def _scenario_near_unanimous_unavoidable() -> Scenario:
 
 def _scenario_precinct_redaction() -> Scenario:
     """
-    For --redact-on-precinct.
+    For precinct redaction (the default, or --redact-on-precinct).
     Style A / Precinct P1 has only 5 ballots (rare pair).
     Style A / Precinct P2 and Style B / Precinct P1 are common.
     Expected: only (Style A, P1) is redacted.
@@ -405,7 +405,7 @@ def _scenario_precinct_redaction() -> Scenario:
     ]
     return Scenario(
         filename="precinct_redaction.csv",
-        description="(Style A, P1) is a rare precinct/style pair. Requires --redact-on-precinct.",
+        description="(Style A, P1) is a rare precinct/style pair, redacted by default.",
         election_name="Test: Precinct Redaction",
         all_contests=contests,
         ballots=ballots,

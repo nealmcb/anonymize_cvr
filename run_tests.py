@@ -11,6 +11,7 @@ Usage:
 
 import csv
 import glob
+import hashlib
 import os
 import shutil
 import subprocess
@@ -495,8 +496,185 @@ def _aggregation_cells(path: str) -> List[str]:
     return failures
 
 
+def _write_explicit_precinct_output() -> None:
+    """Write the --redact-on-precinct output, for the default to be compared with."""
+    _remove_if_present(f"{OUTPUT_DIR}/precinct_explicit.csv")
+    _remove_if_present(f"{OUTPUT_DIR}/precinct_default.csv")
+    _run(
+        [
+            "python",
+            "anonymize_cvr.py",
+            "--redact-on-precinct",
+            f"{GENERATED_DIR}/precinct_redaction.csv",
+            f"{OUTPUT_DIR}/precinct_explicit.csv",
+        ]
+    )
+
+
+def _same_output_as(reference: str) -> Callable[[], List[str]]:
+    """The output just written equals reference, byte for byte."""
+
+    def check() -> List[str]:
+        return _unchanged(f"{OUTPUT_DIR}/precinct_default.csv", reference)
+
+    return check
+
+
+def _no_precinct_column(path: str) -> List[str]:
+    """The written CVR has no PrecinctPortion column."""
+    import csv
+
+    with open(path, newline="", encoding="utf-8") as f:
+        header = list(csv.reader(f))[3]
+    return (
+        ["  PrecinctPortion column still present"]
+        if "PrecinctPortion" in header
+        else []
+    )
+
+
+def _report_says(path: str, input_file: str, *wanted: str) -> List[str]:
+    """Failures unless the report at path names the version, the input's SHA-256, and each of wanted."""
+    if not os.path.exists(path):
+        return [f"  {path}: no report was written"]
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    with open(input_file, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+    failures = []
+    for item in ("anonymize_cvr ", f"Input SHA-256: {digest}", *wanted):
+        if item not in text:
+            failures.append(f"  {path}: the report does not say {item!r}")
+    return failures
+
+
+def _default_names_are_right() -> List[str]:
+    """The window's output names are made from the input's, in its folder or the one chosen."""
+    import anonymize_cvr
+
+    got = anonymize_cvr.default_output_paths("/data/CVR_Export 1.csv")
+    want = {
+        "output": "/data/CVR_Export 1-redacted.csv",
+        "list": "/data/CVR_Export 1-redacted-ballots.txt",
+        "report": "/data/CVR_Export 1-report.txt",
+    }
+    failures = [f"  default names: {got} != {want}"] if got != want else []
+    got = anonymize_cvr.default_output_paths("/data/cvr.CSV", "/elsewhere")
+    if got["output"] != "/elsewhere/cvr-redacted.csv":
+        failures.append(f"  default names in a chosen folder: {got}")
+    return failures
+
+
 def _make_command_tests() -> List[CommandTest]:
     return [
+        CommandTest(
+            name="report_records_the_run",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/reported.csv",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/reported-list.txt",
+                "--report",
+                f"{OUTPUT_DIR}/reported-report.txt",
+            ],
+            expected=["Report written to"],
+            unexpected=["Traceback"],
+            after=lambda: _report_says(
+                f"{OUTPUT_DIR}/reported-report.txt",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                "Result: completed",
+                "contest balancing: on (default)",
+                f"{OUTPUT_DIR}/reported.csv",
+                f"{OUTPUT_DIR}/reported-list.txt",
+                "Tally verification passed.",
+            ),
+        ),
+        CommandTest(
+            name="existing_report_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/report_refused.csv",
+                "--report",
+                f"{OUTPUT_DIR}/old-report.txt",
+            ],
+            setup=lambda: _write_file(f"{OUTPUT_DIR}/old-report.txt", "keep me\n"),
+            expect_failure=True,
+            expected=["old-report.txt", "already there", "--force"],
+            unexpected=["Traceback"],
+            after=lambda: _no_leftovers(f"{OUTPUT_DIR}/report_refused.csv"),
+        ),
+        CommandTest(
+            name="report_onto_input_refused",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/report_onto_input.csv",
+                "--report",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+            ],
+            expect_failure=True,
+            expected=["the report is the same file as the input CVR"],
+            unexpected=["Traceback"],
+            after=lambda: _no_leftovers(f"{OUTPUT_DIR}/report_onto_input.csv"),
+        ),
+        CommandTest(
+            # A run refused before it starts (its output is already there) writes no report.
+            name="refused_run_writes_no_report",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/already_there_for_report.csv",
+                "--report",
+                f"{OUTPUT_DIR}/refused-report.txt",
+            ],
+            setup=lambda: _write_file(
+                f"{OUTPUT_DIR}/already_there_for_report.csv", "keep me\n"
+            ),
+            expect_failure=True,
+            expected=["already there"],
+            unexpected=["Traceback"],
+            after=lambda: _no_leftovers(f"{OUTPUT_DIR}/refused-report.txt"),
+        ),
+        CommandTest(
+            name="window_output_names",
+            cmd=["python", "-c", "pass"],
+            after=_default_names_are_right,
+        ),
+        CommandTest(
+            # Precinct redaction is the default: with no option the output is
+            # the same as with --redact-on-precinct, which is written first.
+            name="precinct_redaction_is_the_default",
+            setup=_write_explicit_precinct_output,
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/precinct_redaction.csv",
+                f"{OUTPUT_DIR}/precinct_default.csv",
+            ],
+            expected=["Rare ballot style/precinct combinations"],
+            after=_same_output_as(f"{OUTPUT_DIR}/precinct_explicit.csv"),
+        ),
+        CommandTest(
+            # --no-redact-on-precinct removes the precinct column instead (on a
+            # file whose rare styles need redacting, so an output is written).
+            name="no_redact_on_precinct_removes_the_column",
+            setup=lambda: _remove_if_present(f"{OUTPUT_DIR}/precinct_removed.csv"),
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--no-redact-on-precinct",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/precinct_removed.csv",
+            ],
+            expected=["Tally verification passed."],
+            after=lambda: _no_precinct_column(f"{OUTPUT_DIR}/precinct_removed.csv"),
+        ),
         CommandTest(
             # The aggregation line keeps a contest's columns empty when no
             # grouped ballot carries it, and 0 when they carry it unvoted.
@@ -881,6 +1059,7 @@ def _make_command_tests() -> List[CommandTest]:
                 "python",
                 "anonymize_cvr.py",
                 "--check",
+                "--no-redact-on-precinct",
                 f"{GENERATED_DIR}/rare_ballot_type.csv",
             ],
             expected=[
@@ -1101,6 +1280,8 @@ def _make_test_cases() -> List[TestCase]:
             name="rare_contest",
             input_file=f"{g}/rare_contest.csv",
             output_file=f"{o}/rare_contest.csv",
+            redact_flags=["--no-redact-on-precinct"],
+            check_flags=["--no-redact-on-precinct"],
             expected=[
                 "'Fringe District': 5 card(s)",
                 "These contests are redacted",
@@ -1138,8 +1319,8 @@ def _make_test_cases() -> List[TestCase]:
             name="keep_rare_contests_unchanged",
             input_file=f"{g}/rare_contest.csv",
             output_file=f"{o}/rare_contest_keep.csv",
-            redact_flags=["--keep-rare-contests"],
-            check_flags=["--keep-rare-contests"],
+            redact_flags=["--keep-rare-contests", "--no-redact-on-precinct"],
+            check_flags=["--keep-rare-contests", "--no-redact-on-precinct"],
             expected=[
                 "WARNING: --keep-rare-contests was given",
                 "WARNING: balancing could not find enough ballots, so these contests",
@@ -1155,8 +1336,8 @@ def _make_test_cases() -> List[TestCase]:
             name="keep_rare_contests_unchanged_no_rare_ballots",
             input_file=f"{g}/rare_contest_only.csv",
             output_file=f"{o}/rare_contest_only_keep.csv",
-            redact_flags=["--keep-rare-contests"],
-            check_flags=["--keep-rare-contests"],
+            redact_flags=["--keep-rare-contests", "--no-redact-on-precinct"],
+            check_flags=["--keep-rare-contests", "--no-redact-on-precinct"],
             expected=["Tally verification passed."],
             unexpected=["Traceback"],
             file_checks=[

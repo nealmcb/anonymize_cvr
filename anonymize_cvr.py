@@ -26,6 +26,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import datetime
+import hashlib
 import io
 import os
 import queue as queue_module
@@ -64,6 +66,25 @@ class CvrError(Exception):
     """
 
 
+def _about_files(problem: str, *paths: str) -> str:
+    """
+    A message about one or more files: the problem first, then each path alone on its own line,
+    indented and with nothing after it, so it can be selected and copied whole.
+    """
+    return "\n".join([problem] + [f"  {path}" for path in paths])
+
+
+def _error_text(exc: BaseException) -> str:
+    """
+    What went wrong, without the file name.  An OSError's own text ends with the path in
+    quotes (with every backslash doubled on Windows), which copies wrongly, so only its
+    description is used; the caller names the file with _about_files.
+    """
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror
+    return str(exc)
+
+
 # Failures that mean "this file is not a readable UTF-8 CVR CSV".  Note that
 # UnicodeDecodeError is a subclass of ValueError, and StopIteration comes from
 # next(reader) when the four header rows are not all there.
@@ -73,15 +94,15 @@ _READ_ERRORS = (UnicodeDecodeError, csv.Error, StopIteration)
 def _read_error_message(path: str, exc: BaseException) -> str:
     """Describe a failed read of path in terms the reader can act on."""
     if isinstance(exc, UnicodeDecodeError):
-        return f"{path}: not UTF-8 text; save it as UTF-8 CSV and try again"
+        return _about_files("not UTF-8 text; save it as UTF-8 CSV and try again", path)
     if isinstance(exc, StopIteration):
-        return (
-            f"{path}: fewer than four header rows; this does not look like a "
-            "Dominion CVR export"
+        return _about_files(
+            "fewer than four header rows; this does not look like a Dominion CVR export",
+            path,
         )
     if isinstance(exc, csv.Error):
-        return f"{path}: the CSV could not be read: {exc}"
-    return f"{path}: {exc}"
+        return _about_files(f"the CSV could not be read: {exc}", path)
+    return _about_files(_error_text(exc), path)
 
 
 @contextlib.contextmanager
@@ -2109,7 +2130,9 @@ def _temp_output_path(path: str) -> str:
             prefix=os.path.basename(path) + ".", suffix=".part", dir=directory
         )
     except OSError as e:
-        raise CvrError(f"{path}: cannot be written: {e.strerror or e}") from e
+        raise CvrError(
+            _about_files(f"cannot be written: {_error_text(e)}", path)
+        ) from e
     os.close(fd)
     # mkstemp creates the file private to its owner; a redacted CVR is meant
     # to be published, so give it the usual permissions instead.
@@ -2354,9 +2377,9 @@ def perform_redaction(
             redacted_list_file,
             drop_ballottype,
         )
-        print(f"  Output written to {output_file}.")
+        print(f"  Output written to {output_file}")
         if redacted_list_file is not None:
-            print(f"  Redacted ballot list written to {redacted_list_file}.")
+            print(f"  Redacted ballot list written to {redacted_list_file}")
         if visible_with_rare_contest:
             _print_wrapped(
                 f"{visible_with_rare_contest} ballot(s) carried a redacted contest "
@@ -2408,10 +2431,16 @@ def check_output_not_input(
     ):
         if path is not None and _same_file(input_file, path):
             raise CvrError(
-                f"{path}: the {description} is the same file as the input CVR; "
-                "redacting a file onto itself would destroy it, so choose a "
-                "different path"
+                _about_files(
+                    f"the {description} is the same file as the input CVR; "
+                    "redacting a file onto itself would destroy it, so choose a "
+                    "different path",
+                    path,
+                )
             )
+
+
+ALREADY_THERE = "already there; move or rename it, choose another path, or pass --force to replace it"
 
 
 def existing_output_paths(
@@ -2422,6 +2451,169 @@ def existing_output_paths(
     if redacted_list_file is not None:
         paths.append(redacted_list_file)
     return [path for path in paths if os.path.exists(path)]
+
+
+def default_output_paths(
+    input_file: str, folder: Optional[str] = None
+) -> Dict[str, str]:
+    """The window's output files, named from the input CVR, in folder (default: the input's).
+
+    For an input "<name>.csv": "<name>-redacted.csv" (the redacted CVR),
+    "<name>-redacted-ballots.txt" (the ballots whose images need redaction) and
+    "<name>-report.txt" (the report of the run).
+    """
+    stem = os.path.basename(input_file)
+    if stem.lower().endswith(".csv"):
+        stem = stem[: -len(".csv")]
+    folder = folder or os.path.dirname(os.path.abspath(input_file))
+    return {
+        "output": os.path.join(folder, f"{stem}-redacted.csv"),
+        "list": os.path.join(folder, f"{stem}-redacted-ballots.txt"),
+        "report": os.path.join(folder, f"{stem}-report.txt"),
+    }
+
+
+class _TeeWriter(io.TextIOBase):
+    """Pass text on to another stream, keeping a copy (for the report)."""
+
+    def __init__(self, stream: object) -> None:
+        self._stream = stream
+        self.copy = io.StringIO()
+
+    def write(self, text: str) -> int:
+        self.copy.write(text)
+        return self._stream.write(text)  # type: ignore[attr-defined, no-any-return]
+
+    def flush(self) -> None:
+        self._stream.flush()  # type: ignore[attr-defined]
+
+
+def _sha256_of(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def execute_redact_with_report(
+    report_file: str,
+    input_file: str,
+    output_file: str,
+    redacted_list_file: Optional[str],
+    min_ballots: int,
+    redact_on_precinct: bool,
+    style_col: Optional[int] = None,
+    no_contest_balancing: bool = False,
+    force: bool = False,
+    keep_rare_contests: bool = False,
+    drop_ballottype: bool = False,
+) -> None:
+    """
+    Run execute_redact, and save a report of the run in report_file: the version, the time, the
+    input's name and SHA-256, the options, the files written, and everything the run printed.
+    The report is written even if the run stops with an error, and says so.
+
+    Like the other outputs, the report may not be the input, nor another output, and an existing
+    report is replaced only with force.
+    """
+    others = [("input CVR", input_file), ("output file", output_file)]
+    if redacted_list_file is not None:
+        others.append(("--redacted-list file", redacted_list_file))
+    for description, path in others:
+        if _same_file(report_file, path):
+            raise CvrError(
+                _about_files(
+                    f"the report is the same file as the {description}", report_file
+                )
+            )
+    if not force and os.path.exists(report_file):
+        raise CvrError(_about_files(ALREADY_THERE, report_file))
+
+    # Refuse before anything is written, so a refused run leaves no report behind.
+    check_output_not_input(input_file, output_file, redacted_list_file)
+    if not force:
+        existing = existing_output_paths(output_file, redacted_list_file)
+        if existing:
+            raise CvrError(_about_files(ALREADY_THERE, *existing))
+
+    started = datetime.datetime.now().astimezone()
+    input_sha256 = (
+        _sha256_of(input_file) if os.path.isfile(input_file) else "(not readable)"
+    )
+    out = _TeeWriter(sys.stdout)
+    err = _TeeWriter(sys.stderr)
+    err.copy = out.copy  # one record, in the order things were printed
+    result = "completed"
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err  # type: ignore[assignment]
+    try:
+        execute_redact(
+            input_file,
+            output_file,
+            redacted_list_file,
+            min_ballots,
+            redact_on_precinct,
+            style_col,
+            no_contest_balancing,
+            force,
+            keep_rare_contests,
+            drop_ballottype,
+        )
+    except CvrError as e:
+        result = f"stopped with an error: {e}"
+        raise
+    except Exception as e:  # noqa: BLE001 - recorded, then re-raised
+        result = f"stopped with an unexpected error: {e}"
+        raise
+    finally:
+        sys.stdout, sys.stderr = old_stdout, old_stderr
+        written = [
+            p for p in (output_file, redacted_list_file) if p and os.path.exists(p)
+        ]
+        lines = [
+            f"anonymize_cvr {VERSION}: report of a redaction run",
+            f"Started: {started.isoformat(timespec='seconds')}",
+            f"Input CVR: {input_file}",
+            f"Input SHA-256: {input_sha256}",
+            "Options:",
+            f"  minimum ballots: {min_ballots}",
+            "  precinct portions: "
+            + (
+                "group rare ballots within them (default)"
+                if redact_on_precinct
+                else "column removed"
+            ),
+            "  ballot types: "
+            + (
+                "column removed"
+                if drop_ballottype
+                else "group ballots whose type is rare (default)"
+            ),
+            f"  style column: {style_col if style_col is not None else 'none'}",
+            "  contest balancing: "
+            + ("off" if no_contest_balancing else "on (default)"),
+            "  rare contests: "
+            + ("kept" if keep_rare_contests else "redacted (default)"),
+            f"Result: {result}",
+            "Files written:",
+        ]
+        lines += [f"  {p}" for p in written] or ["  none"]
+        lines += [
+            "",
+            "--- What the run printed ---",
+            out.copy.getvalue().rstrip("\n"),
+            "",
+        ]
+        tmp = _temp_output_path(report_file)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            os.replace(tmp, report_file)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        print(f"  Report written to {report_file}")
 
 
 # ---------------------------------------------------------------------------
@@ -2676,13 +2868,12 @@ def execute_check(
         except CvrError:
             raise
         except (ValueError, OSError) as e:
-            raise CvrError(f"{input_file}: {e}") from e
+            raise CvrError(_about_files(_error_text(e), input_file)) from e
 
         if redact_on_precinct and db.precinct_portion_idx is None:
             print(
-                "WARNING: --redact-on-precinct was requested but the CVR has no "
-                "PrecinctPortion column. The option will have no effect.",
-                file=sys.stderr,
+                "Note: the CVR has no PrecinctPortion column, so there are no "
+                "precincts to protect."
             )
 
         print("*** Pass 1: Looking for rare ballot styles.")
@@ -2692,7 +2883,7 @@ def execute_check(
         except CvrError:
             raise
         except (ValueError, OSError) as e:
-            raise CvrError(f"{input_file}: {e}") from e
+            raise CvrError(_about_files(_error_text(e), input_file)) from e
         print()
 
         needs = _analyse_rows(
@@ -2735,11 +2926,7 @@ def execute_redact(
     if not force:
         existing = existing_output_paths(output_file, redacted_list_file)
         if existing:
-            raise CvrError(
-                ", ".join(existing)
-                + ": already there; move or rename it, choose another path, or "
-                "pass --force to replace it"
-            )
+            raise CvrError(_about_files(ALREADY_THERE, *existing))
 
     with TempCVRFile(input_file) as csv_path:
         try:
@@ -2747,13 +2934,12 @@ def execute_redact(
         except CvrError:
             raise
         except (ValueError, OSError) as e:
-            raise CvrError(f"{input_file}: {e}") from e
+            raise CvrError(_about_files(_error_text(e), input_file)) from e
 
         if redact_on_precinct and db.precinct_portion_idx is None:
             print(
-                "WARNING: --redact-on-precinct was requested but the CVR has no "
-                "PrecinctPortion column. The option will have no effect.",
-                file=sys.stderr,
+                "Note: the CVR has no PrecinctPortion column, so there are no "
+                "precincts to protect."
             )
 
         print("*** Pass 1: Looking for rare ballot styles.")
@@ -2763,7 +2949,7 @@ def execute_redact(
         except CvrError:
             raise
         except (ValueError, OSError) as e:
-            raise CvrError(f"{input_file}: {e}") from e
+            raise CvrError(_about_files(_error_text(e), input_file)) from e
         print()
 
         needs = _analyse_rows(
@@ -2798,7 +2984,9 @@ def execute_redact(
             raise
         except (ValueError, OSError) as e:
             raise CvrError(
-                f"{output_file}: the redacted CVR was not written: {e}"
+                _about_files(
+                    f"the redacted CVR was not written: {_error_text(e)}", output_file
+                )
             ) from e
 
 
@@ -2839,14 +3027,33 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Check mode: report whether redaction is needed without writing output.",
     )
-    parser.add_argument(
+    precinct = parser.add_mutually_exclusive_group()
+    precinct.add_argument(
         "--redact-on-precinct",
+        dest="redact_on_precinct",
         action="store_true",
         help=(
-            "Treat precincts with fewer than --min-ballots ballots as rare "
-            "and aggregate them, instead of simply blanking the PrecinctPortion column."
+            "The default. Keep the PrecinctPortion column, and treat a ballot "
+            "style with fewer than --min-ballots ballots in a precinct portion as "
+            "rare, so those ballots are redacted. The precinct portion is read "
+            "from each ballot's "
+            "header or barcode, and may be a real precinct, a split or a ballot "
+            "style, depending on how the county set up the election."
         ),
     )
+    precinct.add_argument(
+        "--no-redact-on-precinct",
+        dest="redact_on_precinct",
+        action="store_false",
+        help=(
+            "Remove the PrecinctPortion column instead, and judge rarity by "
+            "ballot style alone. Use only if you will never release ballot images "
+            "that show precinct information (on the ballot's header or barcode): "
+            "a ballot whose style is rare only within its precinct portion stays "
+            "visible and is not listed by --redacted-list."
+        ),
+    )
+    parser.set_defaults(redact_on_precinct=True)
     parser.add_argument(
         "--min-ballots",
         type=int,
@@ -2915,7 +3122,19 @@ def parse_args() -> argparse.Namespace:
             "These are the ballots whose images also need redaction."
         ),
     )
+    parser.add_argument(
+        "--report",
+        metavar="FILENAME",
+        default=None,
+        help=(
+            "Also save a report of the run in FILENAME: the version, the time, the "
+            "input's name and SHA-256, the options, the files written, and "
+            "everything the run printed.  The window always writes one."
+        ),
+    )
     args = parser.parse_args()
+    if args.check and args.report is not None:
+        parser.error("--report is not used in --check mode.")
     if args.check and args.output_file is not None:
         parser.error("output_file cannot be specified in --check mode.")
     if not args.check and args.output_file is None:
@@ -2939,6 +3158,20 @@ def cli_main() -> None:
                 args.min_ballots,
                 args.redact_on_precinct,
                 args.stylecol,
+                args.keep_rare_contests,
+                args.drop_ballottype,
+            )
+        elif args.report is not None:
+            execute_redact_with_report(
+                args.report,
+                args.input_file,
+                args.output_file,
+                args.redacted_list,
+                args.min_ballots,
+                args.redact_on_precinct,
+                args.stylecol,
+                args.no_contest_balancing,
+                args.force,
                 args.keep_rare_contests,
                 args.drop_ballottype,
             )
@@ -2971,11 +3204,11 @@ class CvrAnonymizerApp:
 
         self.root = root
         self.root.title("CVR Anonymizer")
-        self.root.geometry("700x640")
+        self.root.geometry("760x700")
         self.root.resizable(True, True)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self.config_redact_on_precinct: bool = False
+        self.config_redact_on_precinct: bool = True
         self.config_no_contest_balancing: bool = False
         self.config_min_ballots: int = MIN_BALLOTS_DEFAULT
         self.config_style_col: Optional[int] = None
@@ -3054,8 +3287,8 @@ class CvrAnonymizerApp:
         ).pack(pady=(15, 5))
 
         parts = [f"Min ballots: {self.config_min_ballots}"]
-        if self.config_redact_on_precinct:
-            parts.append("Redact on precinct: yes")
+        if not self.config_redact_on_precinct:
+            parts.append("Redact on precinct: no (precinct column removed)")
         if self.config_no_contest_balancing:
             parts.append("No contest balancing")
         if self.config_style_col is not None:
@@ -3063,7 +3296,7 @@ class CvrAnonymizerApp:
         if self.config_keep_rare_contests:
             parts.append("Keep rare contests")
         if self.config_drop_ballottype:
-            parts.append("Drop BallotType")
+            parts.append("Ballot-type column removed")
         tk.Label(
             self.root,
             text="  |  ".join(parts),
@@ -3088,21 +3321,16 @@ class CvrAnonymizerApp:
 
         frame = tk.Frame(self.root, padx=20, pady=5)
         frame.pack(fill=tk.X)
+        bold = ("TkDefaultFont", 10, "bold")
+        note = ("TkDefaultFont", 9)
 
-        self._redact_on_precinct_var = tk.BooleanVar(
-            value=self.config_redact_on_precinct
-        )
-        tk.Checkbutton(
+        tk.Label(frame, text="Protections", font=bold).pack(anchor=tk.W)
+        tk.Label(
             frame,
-            text=(
-                "Redact on Precinct\n"
-                "Treat [ballot style, precinct] combinations with fewer than\n"
-                "the minimum ballots as rare, in addition to rare styles alone."
-            ),
-            variable=self._redact_on_precinct_var,
-            justify=tk.LEFT,
-            anchor=tk.W,
-        ).pack(anchor=tk.W, pady=(5, 12))
+            text="Leave these unchecked: checking either one weakens voter privacy.",
+            fg="gray",
+            font=note,
+        ).pack(anchor=tk.W, pady=(0, 4))
 
         self._no_contest_balancing_var = tk.BooleanVar(
             value=self.config_no_contest_balancing
@@ -3116,7 +3344,7 @@ class CvrAnonymizerApp:
             variable=self._no_contest_balancing_var,
             justify=tk.LEFT,
             anchor=tk.W,
-        ).pack(anchor=tk.W, pady=(0, 12))
+        ).pack(anchor=tk.W, pady=(0, 6))
 
         self._keep_rare_contests_var = tk.BooleanVar(
             value=self.config_keep_rare_contests
@@ -3130,20 +3358,68 @@ class CvrAnonymizerApp:
             variable=self._keep_rare_contests_var,
             justify=tk.LEFT,
             anchor=tk.W,
-        ).pack(anchor=tk.W, pady=(0, 12))
+        ).pack(anchor=tk.W, pady=(0, 10))
 
-        self._drop_ballottype_var = tk.BooleanVar(value=self.config_drop_ballottype)
-        tk.Checkbutton(
+        tk.Label(frame, text="Precinct portions and ballot types", font=bold).pack(
+            anchor=tk.W
+        )
+        tk.Label(
             frame,
             text=(
-                "Drop the BallotType column (and the style column, if set)\n"
-                "Ballots with a rare label are otherwise grouped as rare ballots;\n"
-                "this drops the label from the CVR instead (not from ballot images)."
+                "Each ballot's header or barcode records its precinct portion and "
+                "ballot type,\nso released ballot images show them even if the CVR "
+                "doesn't. Keep the default\nchoice in each pair unless you will never "
+                "release ballot images that show them."
+            ),
+            fg="gray",
+            font=note,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        self._redact_on_precinct_var = tk.BooleanVar(
+            value=self.config_redact_on_precinct
+        )
+        tk.Label(frame, text="Precinct portions:").pack(anchor=tk.W)
+        tk.Radiobutton(
+            frame,
+            text=(
+                "Group rare ballots within their precinct portion "
+                "(keeps the precinct column; recommended)"
+            ),
+            variable=self._redact_on_precinct_var,
+            value=True,
+            anchor=tk.W,
+        ).pack(anchor=tk.W, padx=(16, 0))
+        tk.Radiobutton(
+            frame,
+            text="Remove the precinct column (not recommended)",
+            variable=self._redact_on_precinct_var,
+            value=False,
+            anchor=tk.W,
+        ).pack(anchor=tk.W, padx=(16, 0), pady=(0, 6))
+
+        self._drop_ballottype_var = tk.BooleanVar(value=self.config_drop_ballottype)
+        tk.Label(frame, text="Ballot types:").pack(anchor=tk.W)
+        tk.Radiobutton(
+            frame,
+            text=(
+                "Group ballots whose ballot type is rare "
+                "(keeps the ballot-type column; recommended)"
             ),
             variable=self._drop_ballottype_var,
-            justify=tk.LEFT,
+            value=False,
             anchor=tk.W,
-        ).pack(anchor=tk.W, pady=(0, 12))
+        ).pack(anchor=tk.W, padx=(16, 0))
+        tk.Radiobutton(
+            frame,
+            text=(
+                "Remove the ballot-type column, and the style column if set "
+                "(not recommended)"
+            ),
+            variable=self._drop_ballottype_var,
+            value=True,
+            anchor=tk.W,
+        ).pack(anchor=tk.W, padx=(16, 0), pady=(0, 10))
 
         min_row = tk.Frame(frame)
         min_row.pack(anchor=tk.W, pady=4)
@@ -3238,8 +3514,10 @@ class CvrAnonymizerApp:
         file_frame.pack(fill=tk.X)
 
         self._redact_input_var = tk.StringVar()
-        self._redact_output_var = tk.StringVar()
-        self._redact_list_var = tk.StringVar()
+        self._redact_folder_var = tk.StringVar()
+        self._redact_names_var = tk.StringVar(
+            value="Choose the input CVR; the files will be named after it."
+        )
 
         self._add_file_row(
             file_frame,
@@ -3249,20 +3527,44 @@ class CvrAnonymizerApp:
         )
         self._add_file_row(
             file_frame,
-            "Output CVR File:",
-            self._redact_output_var,
-            lambda: self._browse_save(
-                self._redact_output_var, "Save redacted CVR as", ".csv"
+            "Save into Folder:",
+            self._redact_folder_var,
+            lambda: self._browse_folder(
+                self._redact_folder_var, "Folder for the redacted CVR and its files"
             ),
         )
-        self._add_file_row(
+        tk.Label(
             file_frame,
-            "Redacted Ballot List\n(optional):",
-            self._redact_list_var,
-            lambda: self._browse_save(
-                self._redact_list_var, "Save redacted ballot list as", ".txt"
-            ),
-        )
+            textvariable=self._redact_names_var,
+            justify=tk.LEFT,
+            anchor=tk.W,
+            fg="gray",
+        ).pack(anchor=tk.W, padx=(24, 0), pady=(2, 0))
+
+        def input_changed(*_: object) -> None:
+            input_file = self._redact_input_var.get().strip()
+            if input_file and not self._redact_folder_var.get().strip():
+                self._redact_folder_var.set(
+                    os.path.dirname(os.path.abspath(input_file))
+                )
+            update_names()
+
+        def update_names(*_: object) -> None:
+            input_file = self._redact_input_var.get().strip()
+            if not input_file:
+                return
+            paths = default_output_paths(
+                input_file, self._redact_folder_var.get().strip() or None
+            )
+            self._redact_names_var.set(
+                "Will write:\n"
+                f"  {os.path.basename(paths['output'])}  (the redacted CVR)\n"
+                f"  {os.path.basename(paths['list'])}  (ballots whose images need redaction)\n"
+                f"  {os.path.basename(paths['report'])}  (the report of this run)"
+            )
+
+        self._redact_input_var.trace_add("write", input_changed)
+        self._redact_folder_var.trace_add("write", update_names)
 
         self._run_button = tk.Button(
             self.root, text="Run Redaction", command=self._run_redaction, width=18
@@ -3279,15 +3581,26 @@ class CvrAnonymizerApp:
         from tkinter import messagebox
 
         input_file = self._redact_input_var.get().strip()
-        output_file = self._redact_output_var.get().strip()
-        redacted_list = self._redact_list_var.get().strip() or None
+        folder = self._redact_folder_var.get().strip()
 
         if not input_file:
             messagebox.showerror("Error", "Please select an input CVR file.")
             return
-        if not output_file:
-            messagebox.showerror("Error", "Please select an output CVR file path.")
+        if not folder:
+            messagebox.showerror("Error", "Please choose a folder to save into.")
             return
+        if not os.path.isdir(folder):
+            messagebox.showerror(
+                "Error",
+                _about_files("there is no such folder; please choose another", folder),
+            )
+            return
+        paths = default_output_paths(input_file, folder)
+        output_file, redacted_list, report = (
+            paths["output"],
+            paths["list"],
+            paths["report"],
+        )
 
         try:
             check_output_not_input(input_file, output_file, redacted_list)
@@ -3296,6 +3609,8 @@ class CvrAnonymizerApp:
             return
 
         existing = existing_output_paths(output_file, redacted_list)
+        if os.path.exists(report):
+            existing.append(report)
         if existing:
             if not messagebox.askyesno(
                 "Replace existing file?",
@@ -3306,7 +3621,8 @@ class CvrAnonymizerApp:
                 return
 
         self._run_in_thread(
-            execute_redact,
+            execute_redact_with_report,
+            report,
             input_file,
             output_file,
             redacted_list,
@@ -3427,6 +3743,13 @@ class CvrAnonymizerApp:
         path = filedialog.askopenfilename(
             title=title, filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
+        if path:
+            var.set(path)
+
+    def _browse_folder(self, var: tk.StringVar, title: str) -> None:
+        from tkinter import filedialog
+
+        path = filedialog.askdirectory(title=title, initialdir=var.get() or None)
         if path:
             var.set(path)
 
