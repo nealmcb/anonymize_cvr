@@ -74,3 +74,12 @@
    Simpler: one output folder, defaulting to the input's folder, with names made from the input's
    (`<export>-redacted.csv`, `<export>-image-list.csv`, `<export>-report.txt`), shown before the
    run and refusing to replace existing files without asking.
+
+5. **Always write the output file, even when nothing needs redaction**
+   Today a run that finds nothing to redact prints "No redaction needed." and writes no file, in
+   the window, on the command line and in the web version, so the county releases its export as
+   it is: with no version tag in the first row, a reader can't tell a file the tool checked from
+   one it never saw, and a CountingGroup column stays unless removed by hand (often in Excel,
+   which drops the quotes and can turn imprinted IDs into dates). Always write the output, with
+   the version tag and without CountingGroup, plus the report. This is only for the released
+   copy; the file uploaded to CORLA stays the voting system's export without CountingGroup.
