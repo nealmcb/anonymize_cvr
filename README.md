@@ -91,6 +91,10 @@ python3 anonymize_cvr.py input.csv output.csv --no-redact-on-precinct
 - `--force`: replace the output file, and the `--redacted-list` file, if they already exist.
   Without it an existing file is left alone and the run stops, and the output is never allowed to
   be the input file itself
+- `--report FILENAME`: also save a report of the run in FILENAME: the version, the time, the
+  input's name and SHA-256, the options, the files written, and everything the run printed. The
+  window always saves one, as `<input>-report.txt` beside the redacted CVR (`<input>-redacted.csv`)
+  and the ballot list (`<input>-redacted-ballots.txt`), in the folder chosen
 - `--redacted-list FILENAME`: write to FILENAME the ImprintedId of every redacted ballot, and of
   every visible ballot that carried a redacted contest. These are the ballots whose images also
   need redaction

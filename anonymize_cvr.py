@@ -26,6 +26,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import datetime
+import hashlib
 import io
 import os
 import queue as queue_module
@@ -2424,6 +2426,174 @@ def existing_output_paths(
     return [path for path in paths if os.path.exists(path)]
 
 
+def default_output_paths(
+    input_file: str, folder: Optional[str] = None
+) -> Dict[str, str]:
+    """The window's output files, named from the input CVR, in folder (default: the input's).
+
+    For an input "<name>.csv": "<name>-redacted.csv" (the redacted CVR),
+    "<name>-redacted-ballots.txt" (the ballots whose images need redaction) and
+    "<name>-report.txt" (the report of the run).
+    """
+    stem = os.path.basename(input_file)
+    if stem.lower().endswith(".csv"):
+        stem = stem[: -len(".csv")]
+    folder = folder or os.path.dirname(os.path.abspath(input_file))
+    return {
+        "output": os.path.join(folder, f"{stem}-redacted.csv"),
+        "list": os.path.join(folder, f"{stem}-redacted-ballots.txt"),
+        "report": os.path.join(folder, f"{stem}-report.txt"),
+    }
+
+
+class _TeeWriter(io.TextIOBase):
+    """Pass text on to another stream, keeping a copy (for the report)."""
+
+    def __init__(self, stream: object) -> None:
+        self._stream = stream
+        self.copy = io.StringIO()
+
+    def write(self, text: str) -> int:
+        self.copy.write(text)
+        return self._stream.write(text)  # type: ignore[attr-defined, no-any-return]
+
+    def flush(self) -> None:
+        self._stream.flush()  # type: ignore[attr-defined]
+
+
+def _sha256_of(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def execute_redact_with_report(
+    report_file: str,
+    input_file: str,
+    output_file: str,
+    redacted_list_file: Optional[str],
+    min_ballots: int,
+    redact_on_precinct: bool,
+    style_col: Optional[int] = None,
+    no_contest_balancing: bool = False,
+    force: bool = False,
+    keep_rare_contests: bool = False,
+    drop_ballottype: bool = False,
+) -> None:
+    """
+    Run execute_redact, and save a report of the run in report_file: the version, the time, the
+    input's name and SHA-256, the options, the files written, and everything the run printed.
+    The report is written even if the run stops with an error, and says so.
+
+    Like the other outputs, the report may not be the input, nor another output, and an existing
+    report is replaced only with force.
+    """
+    others = [("input CVR", input_file), ("output file", output_file)]
+    if redacted_list_file is not None:
+        others.append(("--redacted-list file", redacted_list_file))
+    for description, path in others:
+        if _same_file(report_file, path):
+            raise CvrError(
+                f"{report_file}: the report is the same file as the {description}"
+            )
+    if not force and os.path.exists(report_file):
+        raise CvrError(
+            f"{report_file}: already there; move or rename it, choose another path, or "
+            "pass --force to replace it"
+        )
+
+    # Refuse before anything is written, so a refused run leaves no report behind.
+    check_output_not_input(input_file, output_file, redacted_list_file)
+    if not force:
+        existing = existing_output_paths(output_file, redacted_list_file)
+        if existing:
+            raise CvrError(
+                ", ".join(existing)
+                + ": already there; move or rename it, choose another path, or "
+                "pass --force to replace it"
+            )
+
+    started = datetime.datetime.now().astimezone()
+    input_sha256 = (
+        _sha256_of(input_file) if os.path.isfile(input_file) else "(not readable)"
+    )
+    out = _TeeWriter(sys.stdout)
+    err = _TeeWriter(sys.stderr)
+    err.copy = out.copy  # one record, in the order things were printed
+    result = "completed"
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err  # type: ignore[assignment]
+    try:
+        execute_redact(
+            input_file,
+            output_file,
+            redacted_list_file,
+            min_ballots,
+            redact_on_precinct,
+            style_col,
+            no_contest_balancing,
+            force,
+            keep_rare_contests,
+            drop_ballottype,
+        )
+    except CvrError as e:
+        result = f"stopped with an error: {e}"
+        raise
+    except Exception as e:  # noqa: BLE001 - recorded, then re-raised
+        result = f"stopped with an unexpected error: {e}"
+        raise
+    finally:
+        sys.stdout, sys.stderr = old_stdout, old_stderr
+        written = [
+            p for p in (output_file, redacted_list_file) if p and os.path.exists(p)
+        ]
+        lines = [
+            f"anonymize_cvr {VERSION}: report of a redaction run",
+            f"Started: {started.isoformat(timespec='seconds')}",
+            f"Input CVR: {input_file}",
+            f"Input SHA-256: {input_sha256}",
+            "Options:",
+            f"  minimum ballots: {min_ballots}",
+            "  precinct portions: "
+            + (
+                "group rare ballots within them (default)"
+                if redact_on_precinct
+                else "column removed"
+            ),
+            "  ballot types: "
+            + (
+                "column removed"
+                if drop_ballottype
+                else "group ballots whose type is rare (default)"
+            ),
+            f"  style column: {style_col if style_col is not None else 'none'}",
+            "  contest balancing: "
+            + ("off" if no_contest_balancing else "on (default)"),
+            "  rare contests: "
+            + ("kept" if keep_rare_contests else "redacted (default)"),
+            f"Result: {result}",
+            "Files written:",
+        ]
+        lines += [f"  {p}" for p in written] or ["  none"]
+        lines += [
+            "",
+            "--- What the run printed ---",
+            out.copy.getvalue().rstrip("\n"),
+            "",
+        ]
+        tmp = _temp_output_path(report_file)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            os.replace(tmp, report_file)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        print(f"  Report written to {report_file}.")
+
+
 # ---------------------------------------------------------------------------
 # High-level execution functions (shared by CLI and GUI)
 # ---------------------------------------------------------------------------
@@ -2932,7 +3102,19 @@ def parse_args() -> argparse.Namespace:
             "These are the ballots whose images also need redaction."
         ),
     )
+    parser.add_argument(
+        "--report",
+        metavar="FILENAME",
+        default=None,
+        help=(
+            "Also save a report of the run in FILENAME: the version, the time, the "
+            "input's name and SHA-256, the options, the files written, and "
+            "everything the run printed.  The window always writes one."
+        ),
+    )
     args = parser.parse_args()
+    if args.check and args.report is not None:
+        parser.error("--report is not used in --check mode.")
     if args.check and args.output_file is not None:
         parser.error("output_file cannot be specified in --check mode.")
     if not args.check and args.output_file is None:
@@ -2956,6 +3138,20 @@ def cli_main() -> None:
                 args.min_ballots,
                 args.redact_on_precinct,
                 args.stylecol,
+                args.keep_rare_contests,
+                args.drop_ballottype,
+            )
+        elif args.report is not None:
+            execute_redact_with_report(
+                args.report,
+                args.input_file,
+                args.output_file,
+                args.redacted_list,
+                args.min_ballots,
+                args.redact_on_precinct,
+                args.stylecol,
+                args.no_contest_balancing,
+                args.force,
                 args.keep_rare_contests,
                 args.drop_ballottype,
             )
@@ -3298,8 +3494,10 @@ class CvrAnonymizerApp:
         file_frame.pack(fill=tk.X)
 
         self._redact_input_var = tk.StringVar()
-        self._redact_output_var = tk.StringVar()
-        self._redact_list_var = tk.StringVar()
+        self._redact_folder_var = tk.StringVar()
+        self._redact_names_var = tk.StringVar(
+            value="Choose the input CVR; the files will be named after it."
+        )
 
         self._add_file_row(
             file_frame,
@@ -3309,20 +3507,44 @@ class CvrAnonymizerApp:
         )
         self._add_file_row(
             file_frame,
-            "Output CVR File:",
-            self._redact_output_var,
-            lambda: self._browse_save(
-                self._redact_output_var, "Save redacted CVR as", ".csv"
+            "Save into Folder:",
+            self._redact_folder_var,
+            lambda: self._browse_folder(
+                self._redact_folder_var, "Folder for the redacted CVR and its files"
             ),
         )
-        self._add_file_row(
+        tk.Label(
             file_frame,
-            "Redacted Ballot List\n(recommended):",
-            self._redact_list_var,
-            lambda: self._browse_save(
-                self._redact_list_var, "Save redacted ballot list as", ".txt"
-            ),
-        )
+            textvariable=self._redact_names_var,
+            justify=tk.LEFT,
+            anchor=tk.W,
+            fg="gray",
+        ).pack(anchor=tk.W, padx=(24, 0), pady=(2, 0))
+
+        def input_changed(*_: object) -> None:
+            input_file = self._redact_input_var.get().strip()
+            if input_file and not self._redact_folder_var.get().strip():
+                self._redact_folder_var.set(
+                    os.path.dirname(os.path.abspath(input_file))
+                )
+            update_names()
+
+        def update_names(*_: object) -> None:
+            input_file = self._redact_input_var.get().strip()
+            if not input_file:
+                return
+            paths = default_output_paths(
+                input_file, self._redact_folder_var.get().strip() or None
+            )
+            self._redact_names_var.set(
+                "Will write:\n"
+                f"  {os.path.basename(paths['output'])}  (the redacted CVR)\n"
+                f"  {os.path.basename(paths['list'])}  (ballots whose images need redaction)\n"
+                f"  {os.path.basename(paths['report'])}  (the report of this run)"
+            )
+
+        self._redact_input_var.trace_add("write", input_changed)
+        self._redact_folder_var.trace_add("write", update_names)
 
         self._run_button = tk.Button(
             self.root, text="Run Redaction", command=self._run_redaction, width=18
@@ -3339,15 +3561,25 @@ class CvrAnonymizerApp:
         from tkinter import messagebox
 
         input_file = self._redact_input_var.get().strip()
-        output_file = self._redact_output_var.get().strip()
-        redacted_list = self._redact_list_var.get().strip() or None
+        folder = self._redact_folder_var.get().strip()
 
         if not input_file:
             messagebox.showerror("Error", "Please select an input CVR file.")
             return
-        if not output_file:
-            messagebox.showerror("Error", "Please select an output CVR file path.")
+        if not folder:
+            messagebox.showerror("Error", "Please choose a folder to save into.")
             return
+        if not os.path.isdir(folder):
+            messagebox.showerror(
+                "Error", f"{folder}: there is no such folder; please choose another."
+            )
+            return
+        paths = default_output_paths(input_file, folder)
+        output_file, redacted_list, report = (
+            paths["output"],
+            paths["list"],
+            paths["report"],
+        )
 
         try:
             check_output_not_input(input_file, output_file, redacted_list)
@@ -3356,6 +3588,8 @@ class CvrAnonymizerApp:
             return
 
         existing = existing_output_paths(output_file, redacted_list)
+        if os.path.exists(report):
+            existing.append(report)
         if existing:
             if not messagebox.askyesno(
                 "Replace existing file?",
@@ -3366,7 +3600,8 @@ class CvrAnonymizerApp:
                 return
 
         self._run_in_thread(
-            execute_redact,
+            execute_redact_with_report,
+            report,
             input_file,
             output_file,
             redacted_list,
@@ -3487,6 +3722,13 @@ class CvrAnonymizerApp:
         path = filedialog.askopenfilename(
             title=title, filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
+        if path:
+            var.set(path)
+
+    def _browse_folder(self, var: tk.StringVar, title: str) -> None:
+        from tkinter import filedialog
+
+        path = filedialog.askdirectory(title=title, initialdir=var.get() or None)
         if path:
             var.set(path)
 
