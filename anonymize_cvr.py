@@ -2356,9 +2356,9 @@ def perform_redaction(
             redacted_list_file,
             drop_ballottype,
         )
-        print(f"  Output written to {output_file}.")
+        print(f"  Output written to {output_file}")
         if redacted_list_file is not None:
-            print(f"  Redacted ballot list written to {redacted_list_file}.")
+            print(f"  Redacted ballot list written to {redacted_list_file}")
         if visible_with_rare_contest:
             _print_wrapped(
                 f"{visible_with_rare_contest} ballot(s) carried a redacted contest "
@@ -2591,7 +2591,7 @@ def execute_redact_with_report(
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
-        print(f"  Report written to {report_file}.")
+        print(f"  Report written to {report_file}")
 
 
 # ---------------------------------------------------------------------------
