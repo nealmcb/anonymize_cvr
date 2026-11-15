@@ -38,3 +38,8 @@ path = "anonymize_cvr.py"
 [tool.hatch.build.targets.wheel]
 # The wheel holds exactly these two files and its metadata, nothing else.
 only-include = ["anonymize_cvr.py", "verify_redaction.py"]
+
+[tool.black]
+# Format as before this file existed: without a target, black would read requires-python and
+# rewrite multi-line "with" statements in parentheses, which only Python 3.10 documents.
+target-version = ["py38"]
