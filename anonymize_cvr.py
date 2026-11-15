@@ -66,6 +66,25 @@ class CvrError(Exception):
     """
 
 
+def _about_files(problem: str, *paths: str) -> str:
+    """
+    A message about one or more files: the problem first, then each path alone on its own line,
+    indented and with nothing after it, so it can be selected and copied whole.
+    """
+    return "\n".join([problem] + [f"  {path}" for path in paths])
+
+
+def _error_text(exc: BaseException) -> str:
+    """
+    What went wrong, without the file name.  An OSError's own text ends with the path in
+    quotes (with every backslash doubled on Windows), which copies wrongly, so only its
+    description is used; the caller names the file with _about_files.
+    """
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror
+    return str(exc)
+
+
 # Failures that mean "this file is not a readable UTF-8 CVR CSV".  Note that
 # UnicodeDecodeError is a subclass of ValueError, and StopIteration comes from
 # next(reader) when the four header rows are not all there.
@@ -75,15 +94,15 @@ _READ_ERRORS = (UnicodeDecodeError, csv.Error, StopIteration)
 def _read_error_message(path: str, exc: BaseException) -> str:
     """Describe a failed read of path in terms the reader can act on."""
     if isinstance(exc, UnicodeDecodeError):
-        return f"{path}: not UTF-8 text; save it as UTF-8 CSV and try again"
+        return _about_files("not UTF-8 text; save it as UTF-8 CSV and try again", path)
     if isinstance(exc, StopIteration):
-        return (
-            f"{path}: fewer than four header rows; this does not look like a "
-            "Dominion CVR export"
+        return _about_files(
+            "fewer than four header rows; this does not look like a Dominion CVR export",
+            path,
         )
     if isinstance(exc, csv.Error):
-        return f"{path}: the CSV could not be read: {exc}"
-    return f"{path}: {exc}"
+        return _about_files(f"the CSV could not be read: {exc}", path)
+    return _about_files(_error_text(exc), path)
 
 
 @contextlib.contextmanager
@@ -2111,7 +2130,9 @@ def _temp_output_path(path: str) -> str:
             prefix=os.path.basename(path) + ".", suffix=".part", dir=directory
         )
     except OSError as e:
-        raise CvrError(f"{path}: cannot be written: {e.strerror or e}") from e
+        raise CvrError(
+            _about_files(f"cannot be written: {_error_text(e)}", path)
+        ) from e
     os.close(fd)
     # mkstemp creates the file private to its owner; a redacted CVR is meant
     # to be published, so give it the usual permissions instead.
@@ -2410,10 +2431,16 @@ def check_output_not_input(
     ):
         if path is not None and _same_file(input_file, path):
             raise CvrError(
-                f"{path}: the {description} is the same file as the input CVR; "
-                "redacting a file onto itself would destroy it, so choose a "
-                "different path"
+                _about_files(
+                    f"the {description} is the same file as the input CVR; "
+                    "redacting a file onto itself would destroy it, so choose a "
+                    "different path",
+                    path,
+                )
             )
+
+
+ALREADY_THERE = "already there; move or rename it, choose another path, or pass --force to replace it"
 
 
 def existing_output_paths(
@@ -2496,24 +2523,19 @@ def execute_redact_with_report(
     for description, path in others:
         if _same_file(report_file, path):
             raise CvrError(
-                f"{report_file}: the report is the same file as the {description}"
+                _about_files(
+                    f"the report is the same file as the {description}", report_file
+                )
             )
     if not force and os.path.exists(report_file):
-        raise CvrError(
-            f"{report_file}: already there; move or rename it, choose another path, or "
-            "pass --force to replace it"
-        )
+        raise CvrError(_about_files(ALREADY_THERE, report_file))
 
     # Refuse before anything is written, so a refused run leaves no report behind.
     check_output_not_input(input_file, output_file, redacted_list_file)
     if not force:
         existing = existing_output_paths(output_file, redacted_list_file)
         if existing:
-            raise CvrError(
-                ", ".join(existing)
-                + ": already there; move or rename it, choose another path, or "
-                "pass --force to replace it"
-            )
+            raise CvrError(_about_files(ALREADY_THERE, *existing))
 
     started = datetime.datetime.now().astimezone()
     input_sha256 = (
@@ -2846,7 +2868,7 @@ def execute_check(
         except CvrError:
             raise
         except (ValueError, OSError) as e:
-            raise CvrError(f"{input_file}: {e}") from e
+            raise CvrError(_about_files(_error_text(e), input_file)) from e
 
         if redact_on_precinct and db.precinct_portion_idx is None:
             print(
@@ -2861,7 +2883,7 @@ def execute_check(
         except CvrError:
             raise
         except (ValueError, OSError) as e:
-            raise CvrError(f"{input_file}: {e}") from e
+            raise CvrError(_about_files(_error_text(e), input_file)) from e
         print()
 
         needs = _analyse_rows(
@@ -2904,11 +2926,7 @@ def execute_redact(
     if not force:
         existing = existing_output_paths(output_file, redacted_list_file)
         if existing:
-            raise CvrError(
-                ", ".join(existing)
-                + ": already there; move or rename it, choose another path, or "
-                "pass --force to replace it"
-            )
+            raise CvrError(_about_files(ALREADY_THERE, *existing))
 
     with TempCVRFile(input_file) as csv_path:
         try:
@@ -2916,7 +2934,7 @@ def execute_redact(
         except CvrError:
             raise
         except (ValueError, OSError) as e:
-            raise CvrError(f"{input_file}: {e}") from e
+            raise CvrError(_about_files(_error_text(e), input_file)) from e
 
         if redact_on_precinct and db.precinct_portion_idx is None:
             print(
@@ -2931,7 +2949,7 @@ def execute_redact(
         except CvrError:
             raise
         except (ValueError, OSError) as e:
-            raise CvrError(f"{input_file}: {e}") from e
+            raise CvrError(_about_files(_error_text(e), input_file)) from e
         print()
 
         needs = _analyse_rows(
@@ -2966,7 +2984,9 @@ def execute_redact(
             raise
         except (ValueError, OSError) as e:
             raise CvrError(
-                f"{output_file}: the redacted CVR was not written: {e}"
+                _about_files(
+                    f"the redacted CVR was not written: {_error_text(e)}", output_file
+                )
             ) from e
 
 
@@ -3571,7 +3591,8 @@ class CvrAnonymizerApp:
             return
         if not os.path.isdir(folder):
             messagebox.showerror(
-                "Error", f"{folder}: there is no such folder; please choose another."
+                "Error",
+                _about_files("there is no such folder; please choose another", folder),
             )
             return
         paths = default_output_paths(input_file, folder)

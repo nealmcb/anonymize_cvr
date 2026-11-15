@@ -64,7 +64,8 @@
 
 3. **The web version: the same files**
    The window names its outputs after the input and saves a report of each run; the web version
-   still suggests only the redacted CVR's name, and keeps no report.
+   still suggests only the redacted CVR's name, and keeps no report. Its messages should also
+   put any file name last, on a line of its own, as the Python version's do.
 
 4. **Always write the output file, even when nothing needs redaction**
    Today a run that finds nothing to redact prints "No redaction needed." and writes no file, in
