@@ -8,6 +8,12 @@ wrote it.
 
 ### Redaction
 
+- **Precinct redaction is the default.** Each ballot's header or barcode records its precinct
+  portion, so ballot images show it even when the CVR's precinct column is removed. The tool now
+  keeps that column and groups the ballots whose style is rare within their precinct portion, so
+  they are starred and on the redacted ballot list. `--no-redact-on-precinct` removes the column
+  instead, for counties that will never release ballot images with precinct information;
+  `--redact-on-precinct` still works.
 - **Contests too rare to protect are redacted.** A contest present on more than 0 and fewer than
   `--min-ballots` cards in the whole file can't be protected by grouping ballots, because it is
   rarer than the group. Its columns stay in the file, every cell in them is emptied on every
@@ -30,6 +36,13 @@ wrote it.
 - **`--redacted-list` also lists visible ballots that carried a redacted contest.** Their rows show
   nothing of the contest, but their ballot images do, so images of these ballots need redacting
   too.
+
+### The user interface
+
+- The options are grouped: "Protections" (contest balancing, rare contests), then "Precinct
+  portions and ballot types", each a pair of choices, grouping rare ballots (recommended, and
+  selected) or removing the column.
+- The redacted ballot list is marked recommended.
 
 ### Safety of files
 

@@ -11,11 +11,17 @@ earlier copy.
    of the file it writes says `anonymize_cvr-v0.4.0`.
 2. Run it as before (see the quick start). **Leave the options at their defaults,** in
    particular leave contest balancing on.
-3. Send the audit verifiers the redacted file **with its aggregation line** (the line marked
-   `AGGREGATED` at the end). Whether the copy you publish keeps that line is your decision, but
-   the verifiers need it to check the audit.
+3. Keep the line marked `AGGREGATED` at the end of the redacted file. It holds the combined
+   totals of the grouped ballots; without it, the file's vote totals no longer match your
+   results.
 
 ## What changed
+
+**Precinct portions.** Each ballot's header or barcode records its precinct portion, so a ballot
+image shows it even when the CVR's precinct column is removed. The tool now keeps the precinct
+column by default and groups the ballots whose style is rare within their precinct portion, so
+they can't be picked out by precinct. Remove the column instead only if you will never release
+ballot images with precinct information.
 
 **Contests on only a few ballots.** A contest that appears on fewer than 10 ballots in the whole
 county (a district that takes in a few houses across the county line, say) can't be protected by
@@ -33,10 +39,14 @@ balancing on (the default) the tool borrows enough common ballots to prevent thi
 is not recommended.
 
 **Ballot images.** Redacting the CVR does not redact ballot images. If you release images, the
-list from `--redacted-list` now includes every ballot whose image needs redacting: the grouped
-ballots, and visible ballots that carried a redacted contest. A label printed on the ballot (a
+redacted ballot list (recommended in the window, `--redacted-list` on the command line) includes
+every ballot whose image needs redacting: the grouped ballots, and visible ballots that carried a
+redacted contest. A label printed on the ballot (a
 ballot-style code or precinct number) carried by only a few ballots needs redacting on the images
 too.
+
+**The options window** groups the protections first, then offers precinct portions and ballot
+types as a pair of choices each. Keep the first choice in each pair.
 
 **Safer with your files.** The tool never writes over the CVR it is reading, never replaces an
 existing file without asking, and never leaves a half-written file if something goes wrong.
@@ -62,5 +72,4 @@ for checking the signatures.
 
 ## Questions
 
-Contact the people who sent you this release. Problems can also be reported at
-https://github.com/nealmcb/anonymize_cvr/issues
+Report a problem or ask a question at https://github.com/nealmcb/anonymize_cvr/issues

@@ -5,8 +5,9 @@ file they run is the file that was released. The first release planned this way 
 
 ## Why releases matter here
 
-A county runs this tool on its unredacted cast vote records, and verifiers check the audit with
-the file it produces. Both need to know exactly which program wrote that file. A copy passed
+A county runs this tool on its unredacted cast vote records, and anyone who uses the redacted
+file, to check an audit or the results, needs to know exactly which program wrote it. So does
+the county. A copy passed
 around by a shared-drive link can't show that: the link can point at different contents over
 time, and nothing ties the copy to a commit. A release gives each version a fixed number, a fixed
 set of files, published hashes and signatures, and notes on what changed.
@@ -28,8 +29,8 @@ A GitHub Release on `nealmcb/anonymize_cvr`, tagged `vX.Y.Z` on `main`, with:
 - The wheel built for PyPI (see below).
 - `SHA256SUMS`: the SHA-256 of each file above, and its signature (see Signatures).
 - Release notes: what changed, in words a county election office can use; the recommended
-  settings (the defaults: contest balancing on, and the aggregation line kept in the copy sent to
-  the audit verifiers); how to read `Redacted` in the aggregation line; the warning that ballot
+  settings (the defaults, and keeping the aggregation line, without which the file's totals no
+  longer match the results); how to read `Redacted` in the aggregation line; the warning that ballot
   images need the same redaction.
 - A one-page quick start for counties (see Instructions for counties).
 
@@ -69,7 +70,7 @@ released, and its output names the version.
 
 1. **Download one file, check it, read it, run it.** Download `anonymize_cvr.py` (or
    `anonymize_cvr.html`) from the release page, check its SHA-256 against `SHA256SUMS`, read it
-   if you wish, and run exactly that file. This is the recommended path for county offices.
+   if you wish, and run exactly that file.
 2. **From PyPI, as a wheel.** Only wheels are published, never a source package, so installing
    runs no code: a wheel is a zip file that is unpacked, holding `anonymize_cvr.py`,
    `verify_redaction.py`, the package metadata and a `RECORD` file with each file's hash. There
@@ -86,10 +87,6 @@ released, and its output names the version.
    commands `anonymize_cvr` and `anonymize_cvr_gui`; on Windows `anonymize_cvr_gui` is a
    launcher that opens the window without a console. The checker runs as
    `python -m verify_redaction original.csv redacted.csv`.
-3. **A signed Windows program** (planned for a later release, see below). A bundled `.exe`
-   carries its own Python interpreter and can't practically be read, so it asks for the most
-   trust; its signature says who built it, not what it does. If one is offered, it is built in the
-   release workflow, with an attestation, from the same tagged source.
 
 The wheel is built reproducibly from the tag, so anyone can rebuild it and compare hashes.
 
@@ -104,49 +101,46 @@ The wheel is built reproducibly from the tag, so anyone can rebuild it and compa
 
 ## Release steps
 
-1. Merge the pull requests that make up the release, with CI passing on `main`.
-2. Set the version in `anonymize_cvr.py` and `anonymize_cvr.html` (they must match), update the
-   README's status and usage, and add the release's entry to `CHANGELOG.md`.
-3. Push a signed tag `vX.Y.Z`. The release workflow (`.github/workflows/release.yml`) then:
-   runs the tests; builds the wheel; writes `SHA256SUMS`; attests each file; publishes the wheel
-   to PyPI through trusted publishing, after a maintainer approves the `pypi` environment; and
-   creates a draft GitHub Release with the files.
-4. A maintainer downloads `SHA256SUMS` from the draft, checks it, signs it with Sigstore, adds
-   the signature and certificate to the draft, and publishes the release.
-5. Send counties the release page's link and the quick start, in place of any earlier copy.
+1. **Prepare the release in a pull request:** set the version in `anonymize_cvr.py` and
+   `anonymize_cvr.html` (they must match, as three numbers: `X.Y.Z`), update the README's status
+   and usage, and add the release's entry to `CHANGELOG.md`. Merge it, with CI passing on
+   `main`.
+2. **Tag the merged commit, on a maintainer's own machine.** The code and the tag travel
+   separately: the code reaches `main` through pull requests, and the tag is made afterwards,
+   signed, pointing at that commit:
+
+   ```
+   git fetch origin
+   git tag -s vX.Y.Z -m "anonymize_cvr X.Y.Z" origin/main
+   git push origin vX.Y.Z
+   ```
+
+   `git tag -s` needs a signing key set up in git (a GPG key, or an SSH key with
+   `git config gpg.format ssh`). Don't create the tag from GitHub's web pages: a tag made there
+   is not signed. Only maintainers can create `v*` tags.
+3. **The tag starts the release workflow** (`.github/workflows/release.yml`). It checks that the
+   tag is on `main` and matches the version in both tools; runs the tests; builds the wheel;
+   writes `SHA256SUMS`; attests each file; waits for a maintainer to approve the `pypi`
+   environment, then publishes the wheel to PyPI through trusted publishing; and creates a draft
+   GitHub Release with the files.
+4. **Sign and publish.** A maintainer downloads `SHA256SUMS` from the draft, checks it, signs it
+   with Sigstore, adds the signature and certificate to the draft, replaces the draft's notes
+   with the release notes, and publishes the release.
+5. **Announce it,** pointing people to the release page and the quick start rather than to any
+   earlier copy.
 
 ## Instructions for counties
 
-The quick start replaces instructions sent by email. It covers: installing Python on Windows if
+The quick start covers: installing Python on Windows if
 it is missing; downloading `anonymize_cvr.py` from the release page (a fixed link for each
 version); optionally checking its SHA-256; starting it; which options to leave as they are
-(contest balancing on); what to send the audit verifiers (the redacted file with its aggregation
-line); and what to do if Windows warns about the download. It links the demonstration video.
-
-## Later: signing for Windows (planned for 0.5)
-
-Windows SmartScreen and Defender can't check a signature on a `.py` file; only a program such as
-an `.exe` built with PyInstaller can carry an Authenticode signature. Options, as of late 2026:
-
-- **Azure Artifact Signing** (formerly Trusted Signing): about $9.99 a month; open to
-  organizations in the USA, Canada, the EU and the UK, and to individual developers in the USA
-  and Canada, after identity validation; signs from GitHub Actions with no hardware token.
-- **An OV certificate** from a certificate authority: about $150 to $300 a year, with the key on
-  a hardware token or a cloud HSM.
-- **An EV certificate** no longer bypasses SmartScreen (since 2024), so it is not worth its
-  higher price for that purpose.
-- **The SignPath Foundation** offers free OV-level signing to qualifying open-source projects.
-
-With any of these, SmartScreen still warns about new files until the publisher's reputation
-builds over consecutive releases. Whether a signed `.exe` is needed at all depends on whether
-county offices can run Python; ask their IT staff before choosing.
+(all of them); keeping the aggregation line; saving the report and the redacted ballot list; and
+what to do if Windows warns about the download. It links the demonstration video.
 
 ## Open decisions
 
-- The version number of the first release (0.4.0, or 1.0.0 to signal that counties should use it).
 - Whether the "always write the output file" change goes in the first release.
 - Whether counties are offered the web version as well as the Python file.
 - Whether copies on a shared drive continue; if so, each is named with its version and linked from
   the release page.
 - Who reviews the release notes and the quick start before a release.
-- Whether pull requests are merged with merge commits, or rebased first to keep history linear.
