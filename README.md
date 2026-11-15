@@ -138,6 +138,10 @@ The anonymization tool automatically:
 - `tkinter` only for the optional graphical interface, which starts when the program is run with no
   command-line arguments.  The command line works without it.
 
+To install it as two commands, `anonymize_cvr` and `anonymize_cvr_gui` (the window), from PyPI:
+`pipx install anonymize_cvr`. Releases and their checksums are on the
+[releases page](https://github.com/nealmcb/anonymize_cvr/releases).
+
 ## Testing
 
 `python3 run_tests.py` runs the test cases: it generates synthetic CVRs, redacts them, and checks the

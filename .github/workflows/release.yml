@@ -8,7 +8,7 @@
 # Runs when a maintainer pushes a tag vX.Y.Z on main. It tests, builds the wheel and the release
 # files, attests each file (build provenance in Sigstore's public log), publishes the wheel to
 # PyPI through trusted publishing once a maintainer approves the "pypi" environment, and creates a
-# draft GitHub Release. A maintainer then signs SHA256SUMS with Sigstore, adds the signature to
+# draft GitHub Release. The maintainer then signs SHA256SUMS (Sigstore, OpenPGP), adds them to
 # the draft, and publishes it.
 #
 # No secret or token is used anywhere: PyPI accepts the upload only from this workflow, in this
@@ -198,4 +198,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --draft --verify-tag \
             --title "anonymize_cvr ${TAG#v}" \
-            --notes "Draft. Before publishing: check SHA256SUMS, sign it with Sigstore (docs/RELEASE.md), add SHA256SUMS.sigstore.json, and replace these notes with the release notes."
+            --notes "Draft. Before publishing: check SHA256SUMS, sign it with Sigstore and with OpenPGP (docs/RELEASE.md), add SHA256SUMS.sigstore.json and SHA256SUMS.asc, and replace these notes with the release notes."

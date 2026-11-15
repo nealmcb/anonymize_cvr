@@ -27,7 +27,7 @@ A GitHub Release on `nealmcb/anonymize_cvr`, tagged `vX.Y.Z` on `main`, with:
   version.
 - `verify_redaction.py`: the checker for a redacted file.
 - The wheel built for PyPI (see below).
-- `SHA256SUMS`: the SHA-256 of each file above, and its signature (see Signatures).
+- `SHA256SUMS`: the SHA-256 of each file above, and its two signatures (see Signatures).
 - Release notes: what changed, in words a county election office can use; the recommended
   settings (the defaults, and keeping the aggregation line, without which the file's totals no
   longer match the results); how to read `Redacted` in the aggregation line; the warning that ballot
@@ -40,7 +40,8 @@ The same version is published to PyPI as `anonymize_cvr`.
 
 All of these are free and public, and each can be checked independently:
 
-1. **Signed tag.** The release tag is signed (`git tag -s`), so the source it names is signed.
+1. **Signed tag.** The release tag is signed (`git tag -s`) with the OpenPGP key in item 4, so
+   the source it names is signed.
 2. **Build provenance from the release workflow.** The workflow attests each file it builds
    (`actions/attest-build-provenance`), recording the repository, the commit and the workflow
    run in Sigstore's public transparency log. Anyone can check a file with:
@@ -51,15 +52,27 @@ All of these are free and public, and each can be checked independently:
 
 3. **PyPI attestations.** Publishing through PyPI's trusted publishing attaches the same kind of
    provenance to the wheel on PyPI.
-4. **A maintainer's signature on `SHA256SUMS`.** A maintainer signs the hash list with Sigstore,
-   using a personal identity, which shows that a person approved the release and not only that a
-   workflow ran:
+4. **The maintainer's two signatures on `SHA256SUMS`,** which show that a person approved the
+   release and not only that a workflow ran. They are independent: each can be checked without
+   the other, and neither depends on the other's provider.
+   - **Sigstore,** as `nealmcb@gmail.com` (signed in through Google), recorded in Sigstore's
+     public transparency log (`SHA256SUMS.sigstore.json`):
 
-   ```
-   sigstore sign SHA256SUMS
-   sigstore verify identity SHA256SUMS --cert-identity MAINTAINER_EMAIL \
-     --cert-oidc-issuer https://accounts.google.com
-   ```
+     ```
+     sigstore sign SHA256SUMS
+     sigstore verify identity SHA256SUMS --cert-identity nealmcb@gmail.com \
+       --cert-oidc-issuer https://accounts.google.com
+     ```
+
+   - **OpenPGP,** with Neal McBurnett's key `neal@mcburnett.org`, fingerprint
+     `EDC0 36EB 2397 A000 D7CD  417B B94C 992F 3314 8156` (`SHA256SUMS.asc`). The fingerprint
+     is also published on [Neal's key page](https://neal.mcburnett.org/pgp.html). To sign and
+     check:
+
+     ```
+     gpg --armor --detach-sign SHA256SUMS
+     gpg --verify SHA256SUMS.asc SHA256SUMS
+     ```
 
 5. **Optionally, an OpenTimestamps proof** on `SHA256SUMS`, showing it existed by a given time.
 
@@ -147,9 +160,10 @@ It makes no GitHub Release and doesn't touch PyPI.
    environment (before approving, download the `wheel` artifact from the run and check it), then
    publishes the wheel to PyPI through trusted publishing; and creates a draft
    GitHub Release with the files.
-4. **Sign and publish.** A maintainer downloads `SHA256SUMS` from the draft, checks it, signs it
-   with Sigstore, adds the signature and certificate to the draft, replaces the draft's notes
-   with the release notes, and publishes the release.
+4. **Sign and publish.** The maintainer downloads `SHA256SUMS` from the draft, checks it, signs it
+   with Sigstore and with OpenPGP (item 4 under Signatures), adds `SHA256SUMS.sigstore.json` and
+   `SHA256SUMS.asc` to the draft, replaces the draft's notes with the release notes, and
+   publishes the release.
 5. **Announce it,** pointing people to the release page and the quick start rather than to any
    earlier copy.
 
