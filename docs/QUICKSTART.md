@@ -13,7 +13,7 @@ Microsoft Store: accept. That version includes everything the tool needs.
 
 Download `anonymize_cvr.py` from the release page:
 
-RELEASE_PAGE_LINK
+https://github.com/nealmcb/anonymize_cvr/releases/latest
 
 Use this page for each new version, not a copy saved earlier or sent by email, so you always know
 which version you ran. The version is also noted on the first line of every file the tool produces.

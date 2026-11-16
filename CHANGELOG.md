@@ -4,7 +4,7 @@ Changes to `anonymize_cvr` that matter to people who run it or read its output. 
 written in the first row of every redacted CVR (`anonymize_cvr-vX.Y.Z`) names the release that
 wrote it.
 
-## 0.4.0 (unreleased)
+## 0.4.0 (2026-11-15)
 
 ### Redaction
 

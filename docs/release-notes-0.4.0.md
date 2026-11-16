@@ -66,7 +66,9 @@ existing file without asking, and never leaves a half-written file if something 
 
 ## Checking the file you downloaded
 
-The release page lists the SHA-256 of each file in `SHA256SUMS`, signed by the maintainers. On
+The release page lists the SHA-256 of each file in `SHA256SUMS`, signed by the maintainer
+(Sigstore, as nealmcb@gmail.com, and OpenPGP, key EDC0 36EB 2397 A000 D7CD 417B B94C 992F 3314
+8156). On
 Windows, in PowerShell:
 
 ```
@@ -75,6 +77,16 @@ Get-FileHash anonymize_cvr.py -Algorithm SHA256
 
 The result should match the line for `anonymize_cvr.py` in `SHA256SUMS`. See `docs/RELEASE.md`
 for checking the signatures.
+
+## Installing from PyPI
+
+If you use Python's package tools, the same release is on PyPI as `anonymize-cvr`:
+
+```
+pipx install anonymize_cvr
+```
+
+This installs the commands `anonymize_cvr` and `anonymize_cvr_gui`.
 
 ## Questions
 
