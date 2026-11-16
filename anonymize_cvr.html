@@ -2210,6 +2210,9 @@ function pass1BuildDbAndIndex(file, redactOnPrecinct, log) {
         const rowsByPrivacyUnit = new Map();
         const rowsByBallotType  = new Map();
         const skippedBallotTypeCounts = new Map();
+        // Each row's precinct portion, kept only when the precinct column is removed,
+        // so the ballots rare within their precinct can still be reported.
+        const precinctForRow    = new Map();
 
         let fileRowCount = 0;
         let ballotRowIdx = 0;
@@ -2256,6 +2259,8 @@ function pass1BuildDbAndIndex(file, redactOnPrecinct, log) {
 
                 const precinct = (redactOnPrecinct && db.precinctPortionIdx !== null)
                     ? (row[db.precinctPortionIdx] || '').trim() : '';
+                if (!redactOnPrecinct && db.precinctPortionIdx !== null)
+                    precinctForRow.set(currentIdx, (row[db.precinctPortionIdx] || '').trim());
                 const puKey = styleStr + '|' + precinct;
                 if (!rowsByPrivacyUnit.has(puKey)) rowsByPrivacyUnit.set(puKey, []);
                 rowsByPrivacyUnit.get(puKey).push(currentIdx);
@@ -2272,6 +2277,7 @@ function pass1BuildDbAndIndex(file, redactOnPrecinct, log) {
                 const index = makeIndex(styleIdForRow, styleStrings,
                                         rowsByPrivacyUnit, rowsByBallotType);
                 index.skippedBallotTypeCounts = skippedBallotTypeCounts;
+                index.precinctForRow = precinctForRow;
                 resolve({ db, headerRows, index });
             },
             error: reject,
@@ -2451,8 +2457,10 @@ function checkRedactionNeeds(index, db, minBallots) {
         rareContests: new Map(),   // filled in by the caller (Feature A)
         needsAggregate() { return rarePairs.size > 0; },
         rareLabels: new Map(),     // filled in by the caller (Feature B)
+        imageOnlyRows: 0,          // filled in by the caller (removed precinct column)
         needsRedaction() {
-            return rarePairs.size > 0 || this.rareContests.size > 0 || this.rareLabels.size > 0;
+            return rarePairs.size > 0 || this.rareContests.size > 0 ||
+                this.rareLabels.size > 0 || this.imageOnlyRows > 0;
         },
     };
 }
@@ -3374,6 +3382,23 @@ async function runAnonymizer(file, options, writable, log) {
     const needs = checkRedactionNeeds(index, db, minBallots);
     needs.rareContests = rare;
     needs.rareLabels = rareBallotTypes;
+    // With the precinct column removed, a ballot rare within its precinct stays visible
+    // in the CVR, but its image still shows the precinct (as anonymize_cvr.py lists).
+    if (index.precinctForRow && index.precinctForRow.size > 0) {
+        const byStyleInPrecinct = new Map();
+        for (const [rowIdx, precinct] of index.precinctForRow) {
+            const style = index.styleForRow(rowIdx);
+            if (style === null || !precinct) continue;
+            const key = style + '|' + precinct;
+            byStyleInPrecinct.set(key, (byStyleInPrecinct.get(key) || 0) + 1);
+        }
+        for (const count of byStyleInPrecinct.values())
+            if (count < minBallots) needs.imageOnlyRows += count;
+        if (needs.imageOnlyRows > 0)
+            log('  ' + needs.imageOnlyRows + ' ballot(s) are left visible because the ' +
+                'precinct column is removed, but are rare within their precinct portion: ' +
+                'their images still show the precinct, so it needs hiding on them.');
+    }
     for (const w of needs.leakageWarnings) log('WARNING: ' + w);
 
     if (needs.rarePairs.size > 0) {

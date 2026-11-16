@@ -400,6 +400,10 @@ class RowIndex:
         # Ballots made rare because they carry a rare label: row index -> the
         # privacy unit they were moved into (see make_rare_label_rows_rare).
         self.label_unit_for_row: Dict[int, Tuple[str, str]] = {}
+        # Each row's precinct portion, kept only when the precinct column is
+        # being removed (privacy units then ignore it), so the ballots rare
+        # within their precinct can still be listed for image redaction.
+        self.precinct_for_row: Dict[int, str] = {}
 
     def privacy_unit_for_row(
         self, row_idx: int, style: str, precinct: str
@@ -525,6 +529,10 @@ def build_row_index(
                 precinct = row[db.precinct_portion_idx].strip()
             else:
                 precinct = ""
+                if db.precinct_portion_idx is not None:
+                    index.precinct_for_row[row_idx] = row[
+                        db.precinct_portion_idx
+                    ].strip()
             by_privacy_unit[(style, precinct)].append(row_idx)
 
             if db.named_style_col is not None:
@@ -771,6 +779,11 @@ class RedactionNeeds:
         # ballots with visible votes.  Key: description.  Value: ballot count.
         self.rare_labels: Dict[str, int] = {}
 
+        # Ballots left visible in the CVR because the county removed the
+        # precinct or ballot-type column, but rare by what their images still
+        # show: row index -> reasons (for the redacted ballot list).
+        self.image_reasons: Dict[int, List[str]] = {}
+
     def needs_redaction(self) -> bool:
         """Return True if any redaction work is required."""
         return (
@@ -778,6 +791,7 @@ class RedactionNeeds:
             or len(self.rare_privacy_unit_pairs) > 0
             or len(self.rare_contests) > 0
             or len(self.rare_labels) > 0
+            or len(self.image_reasons) > 0
         )
 
     def needs_aggregate(self) -> bool:
@@ -2116,6 +2130,21 @@ def _add_to_tally(
                 pass
 
 
+# The redacted ballot list (--redacted-list, and the window's <input>-redacted-ballots.txt): a
+# header row, then one row per ballot whose image needs redacting, with the reason.  The remedy
+# differs: a redacted ballot's votes are all starred in the CVR, so its image needs its votes
+# hidden or must be withheld; a visible ballot that carried a redacted contest needs only that
+# contest hidden; a visible ballot rare only by a removed column needs the precinct or the
+# ballot-type code hidden on its image.
+LIST_HEADER = ["ImprintedId", "Reason"]
+REASON_REDACTED = "redacted"
+REASON_REDACTED_CONTEST = "visible but carried a redacted contest"
+REASON_RARE_IN_PRECINCT = (
+    "visible but rare within its precinct portion (column removed)"
+)
+REASON_RARE_LABEL = "visible but its ballot-type label is rare (column removed)"
+
+
 def _temp_output_path(path: str) -> str:
     """
     Create an empty temporary file next to path and return its name.
@@ -2160,6 +2189,7 @@ def _stream_redacted_output(
     redact_on_precinct: bool,
     redacted_list_file: Optional[str],
     drop_ballottype: bool = False,
+    image_reasons: Optional[Dict[int, List[str]]] = None,
 ) -> int:
     """
     Pass 3: stream input to output, redacting rows in redacted_row_indices,
@@ -2224,8 +2254,14 @@ def _stream_redacted_output(
             tmp_list = _temp_output_path(redacted_list_file)
 
         list_out = (
-            open(tmp_list, "w", encoding="utf-8") if tmp_list is not None else None
+            open(tmp_list, "w", encoding="utf-8", newline="")
+            if tmp_list is not None
+            else None
         )
+        list_writer = None
+        if list_out is not None:
+            list_writer = csv.writer(list_out, lineterminator="\n")
+            list_writer.writerow(LIST_HEADER)
         try:
             with _reading(csv_path), open(csv_path, "r", encoding="utf-8") as f_in:
                 with open(tmp_output, "w", encoding="utf-8", newline="") as f_out:
@@ -2257,8 +2293,8 @@ def _stream_redacted_output(
                         # row gets no '*' in their columns.
                         row = _empty_columns(row, blank_cols)
                         if row_idx in redacted_row_indices:
-                            if list_out is not None and len(row) > 4:
-                                list_out.write(row[4] + "\n")
+                            if list_writer is not None and len(row) > 4:
+                                list_writer.writerow([row[4], REASON_REDACTED])
                             writer.writerow(
                                 _remove_columns(
                                     _redact_ballot_row(row, db, redact_on_precinct),
@@ -2266,10 +2302,12 @@ def _stream_redacted_output(
                                 )
                             )
                         else:
+                            reasons = list((image_reasons or {}).get(row_idx, []))
                             if carried_rare_contest:
                                 visible_with_rare_contest += 1
-                                if list_out is not None and len(row) > 4:
-                                    list_out.write(row[4] + "\n")
+                                reasons.insert(0, REASON_REDACTED_CONTEST)
+                            if reasons and list_writer is not None and len(row) > 4:
+                                list_writer.writerow([row[4], "; ".join(reasons)])
                             out_row = _blank_geographic_fields(
                                 row, db, redact_on_precinct
                             )
@@ -2376,6 +2414,7 @@ def perform_redaction(
             redact_on_precinct,
             redacted_list_file,
             drop_ballottype,
+            needs.image_reasons,
         )
         print(f"  Output written to {output_file}")
         if redacted_list_file is not None:
@@ -2848,7 +2887,67 @@ def _analyse_rows(
     for short, labels, _ in rare_label_columns:
         for label, count in labels.items():
             needs.rare_labels[f"{short} {label!r}"] = count
+    needs.image_reasons = _image_only_reasons(
+        index, min_ballots, drop_ballottype, rare_label_columns
+    )
+    _report_image_only(needs.image_reasons, check_mode)
     return needs
+
+
+def _image_only_reasons(
+    index: RowIndex,
+    min_ballots: int,
+    drop_ballottype: bool,
+    rare_label_columns: List[Tuple[str, Dict[str, int], Dict[str, List[int]]]],
+) -> Dict[int, List[str]]:
+    """
+    The ballots whose CVR rows stay visible only because the county removed a
+    column, but whose images still show what made them rare: row index ->
+    reasons.  Ballots that are redacted anyway are listed as redacted instead
+    (perform_redaction gives redacted rows that reason first).
+
+    - Precinct column removed (index.precinct_for_row is kept): a ballot whose
+      style has fewer than min_ballots ballots within its precinct portion.
+    - Label column removed (--drop-ballottype): a ballot whose label is rare.
+    """
+    reasons: Dict[int, List[str]] = defaultdict(list)
+    if index.precinct_for_row:
+        by_style_in_precinct: Dict[Tuple[str, str], List[int]] = defaultdict(list)
+        for row_idx, precinct in index.precinct_for_row.items():
+            style = index.style_for_row(row_idx)
+            if style is not None and precinct:
+                by_style_in_precinct[(style, precinct)].append(row_idx)
+        for rows in by_style_in_precinct.values():
+            if len(rows) < min_ballots:
+                for row_idx in rows:
+                    reasons[row_idx].append(REASON_RARE_IN_PRECINCT)
+    if drop_ballottype:
+        for _, labels, rows_by_label in rare_label_columns:
+            for label in labels:
+                for row_idx in rows_by_label.get(label, []):
+                    if REASON_RARE_LABEL not in reasons[row_idx]:
+                        reasons[row_idx].append(REASON_RARE_LABEL)
+    return dict(reasons)
+
+
+def _report_image_only(image_reasons: Dict[int, List[str]], check_mode: bool) -> None:
+    """Report how many ballots stay visible but need their images redacted."""
+    if not image_reasons:
+        return
+    counts: Dict[str, int] = defaultdict(int)
+    for row_reasons in image_reasons.values():
+        for reason in row_reasons:
+            counts[reason] += 1
+    are = "would be" if check_mode else "are"
+    _print_wrapped(
+        f"{len(image_reasons)} ballot(s) {are} left visible in the CVR because a "
+        "column was removed, but their images still show what makes them rare "
+        "(the precinct, or the ballot-type code).  They are in the redacted "
+        "ballot list, with the reason:"
+    )
+    for reason, count in sorted(counts.items()):
+        print(f"    {count} ballot(s): {reason}")
+    print()
 
 
 def execute_check(
@@ -3051,7 +3150,8 @@ def parse_args() -> argparse.Namespace:
             "ballot style alone. Use only if you will never release ballot images "
             "that show precinct information (on the ballot's header or barcode): "
             "a ballot whose style is rare only within its precinct portion stays "
-            "visible and is not listed by --redacted-list."
+            "visible, and --redacted-list lists it so the precinct can be hidden "
+            "on its image."
         ),
     )
     parser.set_defaults(redact_on_precinct=True)
@@ -3118,9 +3218,12 @@ def parse_args() -> argparse.Namespace:
         metavar="FILENAME",
         default=None,
         help=(
-            "Write to FILENAME, one per line, the ImprintedId of every redacted "
-            "ballot and of every visible ballot that carried a redacted contest.  "
-            "These are the ballots whose images also need redaction."
+            "Write to FILENAME every ballot whose image also needs redaction: a "
+            "header row (ImprintedId,Reason), then one row per ballot with its "
+            "reason: 'redacted'; 'visible but carried a redacted contest'; or, "
+            "when the precinct or ballot-type column is removed, 'visible but "
+            "rare within its precinct portion (column removed)' or 'visible but "
+            "its ballot-type label is rare (column removed)'."
         ),
     )
     parser.add_argument(
