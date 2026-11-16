@@ -84,8 +84,9 @@ The status box shows the same report as it runs, ends by saying the totals check
 names each file written. Keep all three files together.
 
 If it says no redaction is needed, nothing in your CVR needed redacting, and it writes only the
-report.
-Your export, without its CountingGroup column (as uploaded to the RLA tool), needs no redaction.
+report. Then don't publish your full export. Publish the copy you upload to the RLA tool, which
+leaves out the CountingGroup column. That column shows how each ballot was cast (by mail, in
+person), and can identify a voter.
 
 ## 6. Excel caution
 
