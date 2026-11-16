@@ -233,17 +233,31 @@ def _no_leftovers(*paths: str) -> List[str]:
 
 
 def _list_holds(
-    path: str, exactly: Optional[List[str]] = None, includes: Sequence[str] = ()
+    path: str,
+    exactly: Optional[List[str]] = None,
+    includes: Sequence[str] = (),
+    reasons: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """
-    Return failures unless the --redacted-list file at path holds exactly the
-    ImprintedIds given (in any order), or at least those in includes.
+    Return failures unless the --redacted-list file at path (a header row, then
+    ImprintedId,Reason rows) holds exactly the ImprintedIds given (in any order),
+    or at least those in includes, each with the reason given in reasons.
     """
     if not os.path.exists(path):
         return [f"  redacted list was not written: {path}"]
-    with open(path, encoding="utf-8") as f:
-        listed = [line.strip() for line in f if line.strip()]
+    with open(path, encoding="utf-8", newline="") as f:
+        rows = [row for row in csv.reader(f) if row]
+    if not rows or rows[0] != ["ImprintedId", "Reason"]:
+        return [f"  redacted list has no ImprintedId,Reason header: {path}"]
+    listed = [row[0] for row in rows[1:]]
+    listed_reasons = {row[0]: row[1] if len(row) > 1 else "" for row in rows[1:]}
     failures = []
+    for imprinted_id, reason in (reasons or {}).items():
+        if listed_reasons.get(imprinted_id) != reason:
+            failures.append(
+                f"  {imprinted_id}: reason {listed_reasons.get(imprinted_id)!r}, "
+                f"expected {reason!r}"
+            )
     if exactly is not None and sorted(listed) != sorted(exactly):
         failures.append(f"  redacted list holds {listed}, expected {exactly}")
     for imprinted_id in includes:
@@ -976,7 +990,58 @@ def _make_command_tests() -> List[CommandTest]:
             unexpected=["Traceback", "Contests present on fewer than"],
         ),
         CommandTest(
-            # Ballots 46-47 are grouped; 48-50 stay visible but carried Fringe
+            # With the precinct column removed, ballots 1-5 (rare only within
+            # their precinct) stay visible, but their images show the precinct:
+            # they are listed with that reason.
+            name="redacted_list_has_precinct_rare_ballots_when_column_removed",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/precinct_redaction.csv",
+                f"{OUTPUT_DIR}/precinct_removed_listed.csv",
+                "--no-redact-on-precinct",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/precinct_removed_listed.txt",
+            ],
+            expected=["left visible in the CVR because a column was removed"],
+            unexpected=["Traceback"],
+            after=lambda: _list_holds(
+                f"{OUTPUT_DIR}/precinct_removed_listed.txt",
+                exactly=["1-1-1", "1-1-2", "1-1-3", "1-1-4", "1-1-5"],
+                reasons={
+                    f"1-1-{i}": "visible but rare within its precinct portion "
+                    "(column removed)"
+                    for i in range(1, 6)
+                },
+            ),
+        ),
+        CommandTest(
+            # With --drop-ballottype the BT-9 ballots stay visible, but their
+            # images show the label: they are listed with that reason.
+            name="redacted_list_has_rare_label_ballots_when_column_removed",
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/rare_ballot_type.csv",
+                f"{OUTPUT_DIR}/label_removed_listed.csv",
+                "--drop-ballottype",
+                "--redacted-list",
+                f"{OUTPUT_DIR}/label_removed_listed.txt",
+            ],
+            expected=["left visible in the CVR because a column was removed"],
+            unexpected=["Traceback"],
+            after=lambda: _list_holds(
+                f"{OUTPUT_DIR}/label_removed_listed.txt",
+                exactly=["1-1-23", "1-1-24", "1-1-25"],
+                reasons={
+                    f"1-1-{i}": "visible but its ballot-type label is rare "
+                    "(column removed)"
+                    for i in (23, 24, 25)
+                },
+            ),
+        ),
+        CommandTest(
+            # Ballots 46-47 are redacted; 48-50 stay visible but carried Fringe
             # District, which their images still show.  The list has them all.
             name="redacted_list_has_visible_rare_contest_ballots",
             cmd=[
@@ -996,6 +1061,13 @@ def _make_command_tests() -> List[CommandTest]:
             after=lambda: _list_holds(
                 f"{OUTPUT_DIR}/rare_contest_listed.txt",
                 includes=["1-1-46", "1-1-47", "1-1-48", "1-1-49", "1-1-50"],
+                reasons={
+                    "1-1-46": "redacted",
+                    "1-1-47": "redacted",
+                    "1-1-48": "visible but carried a redacted contest",
+                    "1-1-49": "visible but carried a redacted contest",
+                    "1-1-50": "visible but carried a redacted contest",
+                },
             ),
         ),
         CommandTest(
@@ -1066,7 +1138,7 @@ def _make_command_tests() -> List[CommandTest]:
                 "BallotType labels carried by fewer than 10 ballots (1):",
                 "'BT-9': 3 ballot(s)",
                 "These ballots would be treated as rare",
-                "Grouping these ballots protects only the CVR.",
+                "Redacting these ballots protects only the CVR.",
                 "3 ballot(s)  [rare BallotType 'BT-9', style #0]",
                 "Redaction is needed.",
             ],
@@ -1105,7 +1177,7 @@ def _make_command_tests() -> List[CommandTest]:
                 "Named-style labels (column 7) carried by fewer than 10 ballots (2):",
                 "'NS-B': 8 ballot(s)",
                 "'NS-RARE': 6 ballot(s)",
-                "Grouping these ballots protects only the CVR.",
+                "Redacting these ballots protects only the CVR.",
                 "Redaction is needed.",
             ],
             unexpected=["Traceback", "'NS-A'"],
@@ -1363,7 +1435,7 @@ def _make_test_cases() -> List[TestCase]:
             expected=[
                 "'BT-9': 3 ballot(s)",
                 "These ballots are treated as rare",
-                "Grouping these ballots protects only the CVR.",
+                "Redacting these ballots protects only the CVR.",
                 "Tally verification passed.",
             ],
             unexpected=["Traceback"],

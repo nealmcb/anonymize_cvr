@@ -73,7 +73,7 @@ python3 anonymize_cvr.py input.csv output.csv --no-redact-on-precinct
 - `--no-redact-on-precinct`: remove the PrecinctPortion column instead, judging rarity by ballot
   style alone. Use only if you will never release ballot images that show precinct information
   (on the ballot's header or barcode): a ballot whose style is rare only within its precinct stays
-  visible and is not listed by `--redacted-list`
+  visible, and `--redacted-list` lists it so the precinct can be hidden on its image
 - `--stylecol N`: column index (0-based) of a named style field, if present
 - `--no-contest-balancing` (not recommended): don't enforce contest balancing, which requires, for
   each contest on the redacted ballots, that:
@@ -85,7 +85,7 @@ python3 anonymize_cvr.py input.csv output.csv --no-redact-on-precinct
   aggregation line. The report lists any contests this leaves exposed
 - `--keep-rare-contests`: do not redact contests present on fewer than `--min-ballots` cards
 - `--drop-ballottype`: drop the `BallotType` column, and the `--stylecol` column if given, from the
-  output, instead of grouping the ballots whose label is carried by fewer than `--min-ballots`
+  output, instead of redacting the ballots whose label is carried by fewer than `--min-ballots`
   ballots. Either remedy protects only the CVR: a label printed on the ballot also shows on any
   released ballot image, which needs redacting too
 - `--force`: replace the output file, and the `--redacted-list` file, if they already exist.
@@ -95,9 +95,11 @@ python3 anonymize_cvr.py input.csv output.csv --no-redact-on-precinct
   input's name and SHA-256, the options, the files written, and everything the run printed. The
   window always saves one, as `<input>-report.txt` beside the redacted CVR (`<input>-redacted.csv`)
   and the ballot list (`<input>-redacted-ballots.txt`), in the folder chosen
-- `--redacted-list FILENAME`: write to FILENAME the ImprintedId of every redacted ballot, and of
-  every visible ballot that carried a redacted contest. These are the ballots whose images also
-  need redaction
+- `--redacted-list FILENAME`: write to FILENAME every ballot whose image also needs redaction: a
+  header row `ImprintedId,Reason`, then one row per ballot with its reason: "redacted"; "visible
+  but carried a redacted contest"; or, when the precinct or ballot-type column is removed,
+  "visible but rare within its precinct portion (column removed)" or "visible but its ballot-type
+  label is rare (column removed)"
 - `--version`: print the version
 
 ## Example Workflow
