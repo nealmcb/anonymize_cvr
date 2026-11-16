@@ -153,7 +153,10 @@ It makes no GitHub Release and doesn't touch PyPI.
 
    `git tag -s` needs a signing key set up in git (a GPG key, or an SSH key with
    `git config gpg.format ssh`). Don't create the tag from GitHub's web pages: a tag made there
-   is not signed. Only maintainers can create `v*` tags.
+   is not signed. Only maintainers can create `v*` tags: a ruleset forbids creating them and exempts
+   the maintainers, so the push prints "Bypassed rule violations ... Cannot create ref due to
+   creations being restricted". That message means the exemption was used, not that anything
+   failed.
 3. **The tag starts the release workflow** (`.github/workflows/release.yml`). It checks that the
    tag is on `main` and matches the version in both tools; runs the tests; builds the wheel;
    writes `SHA256SUMS`; attests each file; waits for a maintainer to approve the `pypi`
