@@ -566,15 +566,18 @@ def _default_names_are_right() -> List[str]:
     """The window's output names are made from the input's, in its folder or the one chosen."""
     import anonymize_cvr
 
-    got = anonymize_cvr.default_output_paths("/data/CVR_Export 1.csv")
+    # Paths built the way the code builds them, so the test holds on Windows too.
+    data = os.path.abspath(os.path.join(os.sep, "data"))
+    got = anonymize_cvr.default_output_paths(os.path.join(data, "CVR_Export 1.csv"))
     want = {
-        "output": "/data/CVR_Export 1-redacted.csv",
-        "list": "/data/CVR_Export 1-redacted-ballots.txt",
-        "report": "/data/CVR_Export 1-report.txt",
+        "output": os.path.join(data, "CVR_Export 1-redacted.csv"),
+        "list": os.path.join(data, "CVR_Export 1-redacted-ballots.txt"),
+        "report": os.path.join(data, "CVR_Export 1-report.txt"),
     }
     failures = [f"  default names: {got} != {want}"] if got != want else []
-    got = anonymize_cvr.default_output_paths("/data/cvr.CSV", "/elsewhere")
-    if got["output"] != "/elsewhere/cvr-redacted.csv":
+    elsewhere = os.path.abspath(os.path.join(os.sep, "elsewhere"))
+    got = anonymize_cvr.default_output_paths(os.path.join(data, "cvr.CSV"), elsewhere)
+    if got["output"] != os.path.join(elsewhere, "cvr-redacted.csv"):
         failures.append(f"  default names in a chosen folder: {got}")
     return failures
 
