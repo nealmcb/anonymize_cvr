@@ -193,7 +193,7 @@ def _symlink(target: str, link: str) -> None:
     """Point link at target, replacing any previous link."""
     if os.path.lexists(link):
         os.remove(link)
-    os.symlink(target, link)
+    os.symlink(os.path.abspath(target), link)
 
 
 def _write_file(path: str, contents: str) -> None:

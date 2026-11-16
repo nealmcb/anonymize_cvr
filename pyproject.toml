@@ -1,0 +1,45 @@
+[build-system]
+# Pinned, so the same source always builds the same wheel.
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anonymize_cvr"
+dynamic = ["version"]
+description = "Redact Colorado cast vote records for public release (C.R.S. 24-72-205.5)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+# Standard library only; tkinter is needed only for the window.
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Other Audience",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Repository = "https://github.com/nealmcb/anonymize_cvr"
+Releases = "https://github.com/nealmcb/anonymize_cvr/releases"
+
+[project.scripts]
+anonymize_cvr = "anonymize_cvr:main"
+
+[project.gui-scripts]
+# With no arguments main() opens the window; on Windows this launcher has no console.
+anonymize_cvr_gui = "anonymize_cvr:main"
+
+[tool.hatch.version]
+# VERSION = "..." in anonymize_cvr.py; anonymize_cvr.html must carry the same version.
+path = "anonymize_cvr.py"
+
+[tool.hatch.build.targets.wheel]
+# The wheel holds exactly these two files and its metadata, nothing else.
+only-include = ["anonymize_cvr.py", "verify_redaction.py"]
+
+[tool.black]
+# Format as before this file existed: without a target, black would read requires-python and
+# rewrite multi-line "with" statements in parentheses, which only Python 3.10 documents.
+target-version = ["py38"]

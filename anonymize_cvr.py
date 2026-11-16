@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Set, Tuple
 if TYPE_CHECKING:
     import tkinter as tk
 
-VERSION = "0.4"
+VERSION = "0.4.0"
 
 MIN_BALLOTS_DEFAULT = 10
 NEAR_UNANIMOUS_THRESHOLD = 2  # "all but N votes" triggers balancing (Rule c)
