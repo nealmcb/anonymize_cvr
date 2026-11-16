@@ -2,6 +2,10 @@
 
 Software to anonymize Cast Vote Records (CVR) files to meet Colorado's requirement that styles with fewer than 10 ballots per style must be anonymized to protect voter privacy.
 
+**County election offices:** start with the
+[quick start](https://github.com/nealmcb/anonymize_cvr/blob/main/docs/QUICKSTART.md), and download
+the tool from the [latest release](https://github.com/nealmcb/anonymize_cvr/releases/latest).
+
 ## Background
 
 This tool addresses the requirement from **Colorado Open Records Act (C.R.S. 24-72-205.5)** which requires counties to cover or redact before "making available for public inspection" a voted ballot if there are fewer than 10 instances of the ballot's style in the election.
@@ -20,6 +24,11 @@ This is alpha-quality software. Use at your own risk.
 
 ## Documentation
 
+- **[docs/QUICKSTART.md](docs/QUICKSTART.md)**: redacting a CVR step by step, for county election
+  offices
+- **[Releases](https://github.com/nealmcb/anonymize_cvr/releases)**: each version's files, release
+  notes and signed checksums; [CHANGELOG.md](CHANGELOG.md) lists the changes
+- **[docs/RELEASE.md](docs/RELEASE.md)**: how releases are made, and how to check their signatures
 - **specification.md**: Detailed specification of requirements, algorithms, and implementation details
 - **AGENTS.md**: Guidelines for AI agent interactions with this codebase
 

@@ -59,7 +59,7 @@
    only counts the ballots left visible but rare within their precinct). Its messages should also
    put any file name last, on a line of its own, as the Python version's do.
 
-3. **Always write the output file, even when nothing needs redaction**
+3. **Always write the output file, even when nothing needs redaction** (for the next release)
    Today a run that finds nothing to redact prints "No redaction needed." and writes no file, in
    the window, on the command line and in the web version, so the county releases its export as
    it is: with no version tag in the first row, a reader can't tell a file the tool checked from
@@ -67,3 +67,10 @@
    which drops the quotes and can turn imprinted IDs into dates). Always write the output, with
    the version tag and without CountingGroup, plus the report. This is only for the released
    copy; the file uploaded to CORLA stays the voting system's export without CountingGroup.
+
+## Releases
+
+1. **Ship the quick start with each release**
+   `docs/QUICKSTART.md` is read on GitHub, so it always describes `main`, not necessarily the
+   version a county downloaded. Add it to each release's files (as Markdown, or rendered), so a
+   county keeps the instructions that match its copy.

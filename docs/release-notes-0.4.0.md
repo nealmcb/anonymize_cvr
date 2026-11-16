@@ -9,8 +9,9 @@ earlier copy.
 
 1. Download `anonymize_cvr.py` from this release page, not from an earlier link. The first row
    of the file it writes says `anonymize_cvr-v0.4.0`.
-2. Run it as before (see the quick start). **Leave the options at their defaults,** in
-   particular leave contest balancing on.
+2. Follow the quick start for county election offices, step by step:
+   https://github.com/nealmcb/anonymize_cvr/blob/main/docs/QUICKSTART.md
+   **Leave the options at their defaults,** in particular leave contest balancing on.
 3. Keep the line marked `AGGREGATED` at the end of the redacted file. It holds the combined
    totals of the redacted ballots; without it, the file's vote totals no longer match your
    results.
