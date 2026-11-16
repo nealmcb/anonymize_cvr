@@ -67,6 +67,15 @@
    which drops the quotes and can turn imprinted IDs into dates). Always write the output, with
    the version tag and without CountingGroup, plus the report. This is only for the released
    copy; the file uploaded to CORLA stays the voting system's export without CountingGroup.
+   On the command line, also write the report by default, named after the input as the window
+   names it (`<input>-report.txt`), with `--report FILENAME` to choose another name; today the
+   command line saves a report only when given `--report`.
+
+4. **Hashes of the files written, in the report**
+   The report gives the input's SHA-256 but lists the files written by name only. Give each one's
+   SHA-256 too (the redacted CVR and the ballot list), so that the report alone ties a published
+   redacted CVR to the export it was made from, by the version and options it records. This is
+   also what an attestation of the redaction would sign (below).
 
 ## Releases
 
@@ -74,3 +83,27 @@
    `docs/QUICKSTART.md` is read on GitHub, so it always describes `main`, not necessarily the
    version a county downloaded. Add it to each release's files (as Markdown, or rendered), so a
    county keeps the instructions that match its copy.
+
+## Attesting to proper redaction
+
+1. **Plan how the county and an independent verifier could attest to a redaction (in-toto, SCITT)**
+   Today a reader of a published redacted CVR has only the county's word that it came from the
+   real export, by a released version of this tool with sound options. Work out how to make that
+   checkable:
+   - **in-toto:** a layout naming the steps (export from the voting system, redaction, independent
+     verification) and who may perform each; each step signs a statement of its materials and
+     products by hash. The county would sign the redaction step: the export's hash in, the
+     redacted CVR's, the ballot list's and the report's out, with the tool's release hash (its
+     signed SHA256SUMS) and the options. A verifier would sign a statement of its check, either
+     `verify_redaction.py` comparing export and output (which needs the export, so is done by the
+     county, or by someone it trusts with it) or a check of the redacted file alone, such as
+     corla-observer's redaction check. Anyone can then check the chain against the layout.
+   - **SCITT** (IETF Supply Chain Integrity, Transparency and Trust): register those signed
+     statements with a transparency service, which returns receipts, so there is a public,
+     append-only record that the county attested to this file at this time, and no statement can
+     be quietly replaced later. Compare with Sigstore's Rekor log, which the releases and
+     corla-observer's evidence commitments already use.
+   - **Open questions:** whose keys or identities (county election offices' own accounts, through
+     Sigstore keyless signing, say); what a county can do with no extra software; where the
+     statements are published; and what an independent verifier can check without the export.
+
