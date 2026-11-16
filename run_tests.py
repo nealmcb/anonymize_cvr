@@ -495,8 +495,74 @@ def _aggregation_cells(path: str) -> List[str]:
     return failures
 
 
+def _write_explicit_precinct_output() -> None:
+    """Write the --redact-on-precinct output, for the default to be compared with."""
+    _remove_if_present(f"{OUTPUT_DIR}/precinct_explicit.csv")
+    _remove_if_present(f"{OUTPUT_DIR}/precinct_default.csv")
+    _run(
+        [
+            "python",
+            "anonymize_cvr.py",
+            "--redact-on-precinct",
+            f"{GENERATED_DIR}/precinct_redaction.csv",
+            f"{OUTPUT_DIR}/precinct_explicit.csv",
+        ]
+    )
+
+
+def _same_output_as(reference: str) -> Callable[[], List[str]]:
+    """The output just written equals reference, byte for byte."""
+
+    def check() -> List[str]:
+        return _unchanged(f"{OUTPUT_DIR}/precinct_default.csv", reference)
+
+    return check
+
+
+def _no_precinct_column(path: str) -> List[str]:
+    """The written CVR has no PrecinctPortion column."""
+    import csv
+
+    with open(path, newline="", encoding="utf-8") as f:
+        header = list(csv.reader(f))[3]
+    return (
+        ["  PrecinctPortion column still present"]
+        if "PrecinctPortion" in header
+        else []
+    )
+
+
 def _make_command_tests() -> List[CommandTest]:
     return [
+        CommandTest(
+            # Precinct redaction is the default: with no option the output is
+            # the same as with --redact-on-precinct, which is written first.
+            name="precinct_redaction_is_the_default",
+            setup=_write_explicit_precinct_output,
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                f"{GENERATED_DIR}/precinct_redaction.csv",
+                f"{OUTPUT_DIR}/precinct_default.csv",
+            ],
+            expected=["Rare ballot style/precinct combinations"],
+            after=_same_output_as(f"{OUTPUT_DIR}/precinct_explicit.csv"),
+        ),
+        CommandTest(
+            # --no-redact-on-precinct removes the precinct column instead (on a
+            # file whose rare styles need redacting, so an output is written).
+            name="no_redact_on_precinct_removes_the_column",
+            setup=lambda: _remove_if_present(f"{OUTPUT_DIR}/precinct_removed.csv"),
+            cmd=[
+                "python",
+                "anonymize_cvr.py",
+                "--no-redact-on-precinct",
+                f"{GENERATED_DIR}/needs_borrowing.csv",
+                f"{OUTPUT_DIR}/precinct_removed.csv",
+            ],
+            expected=["Tally verification passed."],
+            after=lambda: _no_precinct_column(f"{OUTPUT_DIR}/precinct_removed.csv"),
+        ),
         CommandTest(
             # The aggregation line keeps a contest's columns empty when no
             # grouped ballot carries it, and 0 when they carry it unvoted.
@@ -881,6 +947,7 @@ def _make_command_tests() -> List[CommandTest]:
                 "python",
                 "anonymize_cvr.py",
                 "--check",
+                "--no-redact-on-precinct",
                 f"{GENERATED_DIR}/rare_ballot_type.csv",
             ],
             expected=[
@@ -1101,6 +1168,8 @@ def _make_test_cases() -> List[TestCase]:
             name="rare_contest",
             input_file=f"{g}/rare_contest.csv",
             output_file=f"{o}/rare_contest.csv",
+            redact_flags=["--no-redact-on-precinct"],
+            check_flags=["--no-redact-on-precinct"],
             expected=[
                 "'Fringe District': 5 card(s)",
                 "These contests are redacted",
@@ -1138,8 +1207,8 @@ def _make_test_cases() -> List[TestCase]:
             name="keep_rare_contests_unchanged",
             input_file=f"{g}/rare_contest.csv",
             output_file=f"{o}/rare_contest_keep.csv",
-            redact_flags=["--keep-rare-contests"],
-            check_flags=["--keep-rare-contests"],
+            redact_flags=["--keep-rare-contests", "--no-redact-on-precinct"],
+            check_flags=["--keep-rare-contests", "--no-redact-on-precinct"],
             expected=[
                 "WARNING: --keep-rare-contests was given",
                 "WARNING: balancing could not find enough ballots, so these contests",
@@ -1155,8 +1224,8 @@ def _make_test_cases() -> List[TestCase]:
             name="keep_rare_contests_unchanged_no_rare_ballots",
             input_file=f"{g}/rare_contest_only.csv",
             output_file=f"{o}/rare_contest_only_keep.csv",
-            redact_flags=["--keep-rare-contests"],
-            check_flags=["--keep-rare-contests"],
+            redact_flags=["--keep-rare-contests", "--no-redact-on-precinct"],
+            check_flags=["--keep-rare-contests", "--no-redact-on-precinct"],
             expected=["Tally verification passed."],
             unexpected=["Traceback"],
             file_checks=[

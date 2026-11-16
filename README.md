@@ -35,7 +35,7 @@ exports in CSV format.
 python3 anonymize_cvr.py input.csv output.csv
 python3 anonymize_cvr.py input.csv output.csv --min-ballots 15
 python3 anonymize_cvr.py --check input.csv
-python3 anonymize_cvr.py input.csv output.csv --redact-on-precinct
+python3 anonymize_cvr.py input.csv output.csv --no-redact-on-precinct
 ```
 
 **Features:**
@@ -50,8 +50,9 @@ python3 anonymize_cvr.py input.csv output.csv --redact-on-precinct
 - Combines all rare styles (< 10 ballots) into a single aggregation
 - Ensures at least 10 ballots per contest in the aggregation
 - Adds contrasting votes to prevent unanimous/near-unanimous patterns
-- **Anonymizes identifying fields**: CountingGroup and PrecinctPortion are dynamically detected from headers and blanked in all output rows to prevent revealing geographic or voting method information beyond the contest bitmap
-- **Preserves BallotType**: BallotType is preserved in non-aggregated rows (set to "AGGREGATED" in aggregated rows). The tool warns if BallotType varies for ballots with the same contest pattern, which could indicate information leakage. BallotType values are displayed in the style mapping output
+- **Redacts by precinct by default**: a ballot style with fewer than the minimum ballots within a precinct is treated as rare, so those ballots are redacted, and the PrecinctPortion column is kept. With `--no-redact-on-precinct` the PrecinctPortion column is removed instead, and precincts are not used to decide which ballots are rare. That is safe only if you will never release ballot images that show precinct information (on the ballot's header or barcode). The precinct portion is read from each ballot and may be a real precinct, a split, or a ballot style, depending on how the county set up the election
+- **Removes CountingGroup**: the CountingGroup column, which shows how a ballot was cast, is removed from the output. In Colorado this is required: CORLA rejects a CVR that has this column, and the Secretary of State's guidance releases the CVR without it
+- **Preserves BallotType**: BallotType is preserved in every row, including redacted rows, except the aggregation line, where it is "AGGREGATED". The tool warns if BallotType varies for ballots with the same contest pattern, which could indicate information leakage. BallotType values are displayed in the style mapping output
 - Computes descriptive style names based on contest patterns
 - Detects information leakage when different CVR style names map to the same contest pattern
 - Automatic tally verification ensures vote totals match between original and anonymized CVR
@@ -67,11 +68,19 @@ python3 anonymize_cvr.py input.csv output.csv --redact-on-precinct
 - `--check`, `-c`: report whether redaction is needed, without writing output
 - `--min-ballots N`: minimum ballots required per style or precinct (default: 10, and at
   least 2)
-- `--redact-on-precinct`: aggregate precincts with fewer than the minimum, instead of blanking the
-  PrecinctPortion column
+- `--redact-on-precinct`: the default. Keep the PrecinctPortion column and treat a ballot style
+  with fewer than the minimum ballots within a precinct as rare, so its ballots are redacted
+- `--no-redact-on-precinct`: remove the PrecinctPortion column instead, judging rarity by ballot
+  style alone. Use only if you will never release ballot images that show precinct information
+  (on the ballot's header or barcode): a ballot whose style is rare only within its precinct stays
+  visible and is not listed by `--redacted-list`
 - `--stylecol N`: column index (0-based) of a named style field, if present
-- `--no-contest-balancing`: not recommended. Skip the per-contest minimum and the near-unanimity
-  balancing, so only the total of `--min-ballots` ballots in the aggregate is enforced. A contest
+- `--no-contest-balancing` (not recommended): don't enforce contest balancing, which requires, for
+  each contest on the redacted ballots, that:
+  - at least `--min-ballots` of the redacted ballots carry it, and
+  - their votes in it are not unanimous or nearly so.
+
+  Only the total of `--min-ballots` ballots in the aggregate is then enforced. A contest
   carried by only a few of the rare ballots then has its votes for those ballots shown in the
   aggregation line. The report lists any contests this leaves exposed
 - `--keep-rare-contests`: do not redact contests present on fewer than `--min-ballots` cards
@@ -118,7 +127,7 @@ The anonymization tool uses a balance-focused approach:
    - At least 10 ballots total in the aggregation
    - At least 10 ballots per contest in the aggregation
 4. **Balance votes**: The tool checks for unanimous or near-unanimous patterns (all but 2 votes for the same candidate) and adds contrasting votes from common styles to break these patterns
-5. **Anonymize identifying fields**: CountingGroup and PrecinctPortion are blanked in all output rows to prevent revealing geographic or voting method information. BallotType is preserved in non-aggregated rows (it should only reflect contest pattern, not additional identifying information). Note that if this sort of information is visible on the printed ballot, that should be taken into account when procedures for releasing ballot images are designed.
+5. **Anonymize identifying fields**: CountingGroup is removed from the output. PrecinctPortion is kept, with rare style/precinct combinations grouped (the default), or removed with `--no-redact-on-precinct`. BallotType is preserved in non-aggregated rows (it should only reflect contest pattern, not additional identifying information). Note that if this sort of information is visible on the printed ballot, that should be taken into account when procedures for releasing ballot images are designed.
 6. **Verify tallies**: Before delivering the redacted CVR, vote tallies are automatically verified to match the original
 
 This approach minimizes the number of ballots that need to be redacted while ensuring both anonymity and statistical balance.

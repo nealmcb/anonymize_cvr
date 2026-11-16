@@ -40,7 +40,8 @@ const CASES = [
     ['near_unanimous_fixable.csv', []],
     ['near_unanimous_fixable.csv', ['--no-contest-balancing']],
     ['near_unanimous_unavoidable.csv', []],
-    ['precinct_redaction.csv', ['--redact-on-precinct']],
+    ['precinct_redaction.csv', []],
+    ['precinct_redaction.csv', ['--no-redact-on-precinct']],
     ['ballot_type_present.csv', []],
     ['ballot_type_present.csv', ['--drop-ballottype']],
     ['named_style.csv', []],
@@ -88,7 +89,7 @@ async function runWeb(web, inputPath, flags) {
     };
     const options = {
         minBallots: 10,
-        redactOnPrecinct: flags.includes('--redact-on-precinct'),
+        redactOnPrecinct: !flags.includes('--no-redact-on-precinct'),
         noContestBalancing: flags.includes('--no-contest-balancing'),
         keepRareContests: flags.includes('--keep-rare-contests'),
         dropBallotType: flags.includes('--drop-ballottype'),

@@ -1940,6 +1940,10 @@ License: MIT
         .subtitle { color: #555; margin: 0 0 1.5rem; font-size: 0.95rem; }
         .options { margin-bottom: 1rem; }
         .options label { display: block; margin-bottom: 0.5rem; }
+        .options h3 { margin: 0.8rem 0 0.2rem; font-size: 1rem; }
+        .options .note { margin: 0 0 0.5rem; color: #555; font-size: 0.9rem; }
+        .options fieldset { border: none; margin: 0 0 0.5rem; padding: 0 0 0 1rem; }
+        .options legend { font-weight: normal; padding: 0; margin-left: -1rem; }
         .options input[type="number"] { width: 4.5rem; }
         .file-row { margin-bottom: 1rem; }
         #runBtn {
@@ -1969,10 +1973,8 @@ License: MIT
 Runs entirely in your browser — no file is uploaded to any server.</p>
 
 <div class="options">
-    <label>
-        <input type="checkbox" id="redactOnPrecinct">
-        Redact on precinct &mdash; treat rare (style, precinct) combinations as rare styles
-    </label>
+    <h3>Protections</h3>
+    <p class="note">Leave these unchecked: checking either one weakens voter privacy.</p>
     <label>
         <input type="checkbox" id="noContestBalancing">
         Skip contest balancing (not recommended) &mdash; can reveal votes in contests that
@@ -1983,11 +1985,26 @@ Runs entirely in your browser — no file is uploaded to any server.</p>
         Keep rare contests (not recommended) &mdash; do not redact contests present on fewer
         than the minimum cards
     </label>
-    <label>
-        <input type="checkbox" id="dropBallotType">
-        Drop the BallotType column &mdash; ballots with a rare label are otherwise grouped as
-        rare ballots; this drops the label from the CVR instead (not from ballot images)
-    </label>
+    <h3>Precinct portions and ballot types</h3>
+    <p class="note">Each ballot's header or barcode records its precinct portion and ballot
+    type, so released ballot images show them even if the CVR doesn't. Keep the default choice in
+    each pair unless you will never release ballot images that show them.</p>
+    <fieldset>
+        <legend>Precinct portions</legend>
+        <label><input type="radio" name="precinctMode" id="redactOnPrecinct" checked>
+            Group rare ballots within their precinct portion (keeps the precinct column;
+            recommended)</label>
+        <label><input type="radio" name="precinctMode" id="removePrecinct">
+            Remove the precinct column (not recommended)</label>
+    </fieldset>
+    <fieldset>
+        <legend>Ballot types</legend>
+        <label><input type="radio" name="ballotTypeMode" id="groupBallotType" checked>
+            Group ballots whose ballot type is rare (keeps the ballot-type column;
+            recommended)</label>
+        <label><input type="radio" name="ballotTypeMode" id="dropBallotType">
+            Remove the ballot-type column (not recommended)</label>
+    </fieldset>
     <label>
         Minimum ballots per style:
         <input type="number" id="minBallots" value="10" min="1">

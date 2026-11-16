@@ -40,3 +40,46 @@
    Decide whether to turn it into a scenario in `generate_test_cvrs.py`, or to
    keep hand-made files in their own folder with a note on what each is for.
 
+
+## Window and outputs
+
+1. **Review the options window**
+   Put the precinct and ballot-type options next to each other, under one short explanation of
+   ballot images: a ballot carries its style and, where results are reported by precinct, its
+   precinct, so whatever the CVR hides the images may still show. Word the protections so that
+   leaving every box as it starts is the recommended setting, e.g. "Skip redaction by precinct
+   (not recommended)" in place of "Redact on Precinct", like "Skip contest balancing (not
+   recommended)". Group the boxes under "Protections" and "What to publish". Say "precinct
+   portion" consistently, with a note that it may be a real precinct, a split or a ballot style,
+   depending on how the county set up the election.
+
+2. **Always list every ballot whose image needs redacting**
+   Write the list on every run, not only when a path is given, and include each ballot's reason:
+   grouped in the CVR; visible but carried a redacted contest; or visible but rare once the
+   columns the CVR dropped are counted (precinct, ballot type), since the image still shows
+   them. The remedies differ: hide the votes or withhold the image for the first two, black out
+   the precinct or style code for the third. An option says what the county's images show;
+   assume both precinct and style unless told otherwise.
+
+3. **Keep the report, and say what was written**
+   The report appears only in the window's status box or the terminal, and is gone when the
+   window closes. Always save it beside the output, with the version, the options used, the
+   input file's name and SHA-256, and everything the run found and warned about. The options
+   belong in this report, not in the CVR. End each run with a summary naming every file written:
+   the redacted CVR, the image list and the report.
+
+4. **Choose a folder, not file names**
+   "Browse..." for the output and the ballot list opens a save-as dialog: the user picks a folder
+   and types a new name, and picking an existing file means replacing it (the tool asks first).
+   Simpler: one output folder, defaulting to the input's folder, with names made from the input's
+   (`<export>-redacted.csv`, `<export>-image-list.csv`, `<export>-report.txt`), shown before the
+   run and refusing to replace existing files without asking.
+
+5. **Always write the output file, even when nothing needs redaction**
+   Today a run that finds nothing to redact prints "No redaction needed." and writes no file, in
+   the window, on the command line and in the web version, so the county releases its export as
+   it is: with no version tag in the first row, a reader can't tell a file the tool checked from
+   one it never saw, and a CountingGroup column stays unless removed by hand (often in Excel,
+   which drops the quotes and can turn imprinted IDs into dates). Always write the output, with
+   the version tag and without CountingGroup, plus the report. This is only for the released
+   copy; the file uploaded to CORLA stays the voting system's export without CountingGroup.

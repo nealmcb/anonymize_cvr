@@ -174,7 +174,7 @@ test-rare-contest-only:
 
 test-keep-rare-contests:
 	mkdir -p $(OUTPUT)
-	python anonymize_cvr.py --keep-rare-contests \
+	python anonymize_cvr.py --keep-rare-contests --no-redact-on-precinct \
 	    $(GENERATED)/rare_contest.csv \
 	    $(OUTPUT)/rare_contest_keep.csv
 	cmp $(OUTPUT)/rare_contest_keep.csv tests/expected/rare_contest_keep_rare_contests.csv
