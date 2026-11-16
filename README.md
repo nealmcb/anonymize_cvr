@@ -85,7 +85,7 @@ python3 anonymize_cvr.py input.csv output.csv --no-redact-on-precinct
   aggregation line. The report lists any contests this leaves exposed
 - `--keep-rare-contests`: do not redact contests present on fewer than `--min-ballots` cards
 - `--drop-ballottype`: drop the `BallotType` column, and the `--stylecol` column if given, from the
-  output, instead of grouping the ballots whose label is carried by fewer than `--min-ballots`
+  output, instead of redacting the ballots whose label is carried by fewer than `--min-ballots`
   ballots. Either remedy protects only the CVR: a label printed on the ballot also shows on any
   released ballot image, which needs redacting too
 - `--force`: replace the output file, and the `--redacted-list` file, if they already exist.

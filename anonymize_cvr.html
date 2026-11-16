@@ -1992,7 +1992,7 @@ Runs entirely in your browser — no file is uploaded to any server.</p>
     <fieldset>
         <legend>Precinct portions</legend>
         <label><input type="radio" name="precinctMode" id="redactOnPrecinct" checked>
-            Group rare ballots within their precinct portion (keeps the precinct column;
+            Redact rare ballots within their precinct portion (keeps the precinct column;
             recommended)</label>
         <label><input type="radio" name="precinctMode" id="removePrecinct">
             Remove the precinct column (not recommended)</label>
@@ -2000,7 +2000,7 @@ Runs entirely in your browser — no file is uploaded to any server.</p>
     <fieldset>
         <legend>Ballot types</legend>
         <label><input type="radio" name="ballotTypeMode" id="groupBallotType" checked>
-            Group ballots whose ballot type is rare (keeps the ballot-type column;
+            Redact ballots whose ballot type is rare (keeps the ballot-type column;
             recommended)</label>
         <label><input type="radio" name="ballotTypeMode" id="dropBallotType">
             Remove the ballot-type column (not recommended)</label>
@@ -2373,7 +2373,7 @@ function rareLabels(rowsByLabel, skippedCounts, minBallots) {
 const LABEL_UNIT_SEP = '\u0000';
 
 // Move every ballot carrying a rare label into a privacy unit of its own
-// (style, precinct and label), so it is rare and is grouped into the aggregate.
+// (style, precinct and label), so it is rare and is redacted into the aggregate.
 // What remains of a unit stays in it.  Mirrors make_rare_label_rows_rare().
 function makeRareLabelRowsRare(index, description, labels, rowsByLabel) {
     const tagForRow = new Map();
@@ -2400,7 +2400,7 @@ function makeRareLabelRowsRare(index, description, labels, rowsByLabel) {
     return tagForRow.size;
 }
 
-// Follows "Dropping the column protects only the CVR." or "Grouping these
+// Follows "Dropping the column protects only the CVR." or "Redacting these
 // ballots protects only the CVR.", whichever remedy applies.
 const IMAGE_WARNING_LABELS =
     'The same label is often printed ' +
@@ -3305,7 +3305,7 @@ async function pass3WriteToFile(file, db, headerRows, redactedRowIndices,
 function reportRareContests(rare, minBallots, keepRareContests, log) {
     if (rare.size === 0) return;
     log('  Contests present on fewer than ' + minBallots + ' cards (' + rare.size +
-        '); grouping ballots cannot protect them:');
+        '); aggregating ballots cannot protect them:');
     for (const [name, count] of rare) log("    '" + name + "': " + count + ' card(s)');
     if (keepRareContests) {
         log('  WARNING: "Keep rare contests" is set, so these contests are NOT redacted;');
@@ -3326,14 +3326,14 @@ function reportRareLabels(labels, minBallots, dropBallotType, log) {
     log('  A label this rare picks out the ballots that carry it, even when their ' +
         'contest pattern is common.');
     if (dropBallotType) {
-        log('  The BallotType column is dropped from the output ("Drop the BallotType ' +
-            'column"); these ballots are not grouped on account of the label.');
+        log('  The BallotType column is removed from the output ("Remove the ballot-type ' +
+            'column"); these ballots are not redacted on account of the label.');
         log('  Dropping the column protects only the CVR.  ' + IMAGE_WARNING_LABELS);
     } else {
-        log('  These ballots are treated as rare: grouped into the aggregate, with their ' +
-            'votes starred.  The BallotType column stays; "Drop the BallotType column" ' +
-            'drops it instead.');
-        log('  Grouping these ballots protects only the CVR.  ' + IMAGE_WARNING_LABELS);
+        log('  These ballots are treated as rare: redacted, with their votes starred and ' +
+            'counted in the aggregation line.  The BallotType column stays; "Remove the ballot-type column" ' +
+            'removes it instead.');
+        log('  Redacting these ballots protects only the CVR.  ' + IMAGE_WARNING_LABELS);
     }
     log('');
 }

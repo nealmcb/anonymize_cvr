@@ -695,7 +695,7 @@ def make_rare_label_rows_rare(
 ) -> int:
     """
     Move every ballot that carries a rare label into a privacy unit of its own
-    (its style, its precinct and the label), so it is rare and is grouped into
+    (its style, its precinct and the label), so it is rare and is redacted into
     the aggregate like any rare ballot.  Return the number of ballots moved.
 
     rare_labels_by_column holds (column description, rare labels, rows by
@@ -2580,7 +2580,7 @@ def execute_redact_with_report(
             f"  minimum ballots: {min_ballots}",
             "  precinct portions: "
             + (
-                "group rare ballots within them (default)"
+                "redact rare ballots within them (default)"
                 if redact_on_precinct
                 else "column removed"
             ),
@@ -2588,7 +2588,7 @@ def execute_redact_with_report(
             + (
                 "column removed"
                 if drop_ballottype
-                else "group ballots whose type is rare (default)"
+                else "redact ballots whose type is rare (default)"
             ),
             f"  style column: {style_col if style_col is not None else 'none'}",
             "  contest balancing: "
@@ -2691,7 +2691,7 @@ def _report_check_results(
         print("No redaction needed.")
 
 
-# Follows "Dropping the column protects only the CVR." or "Grouping these
+# Follows "Dropping the column protects only the CVR." or "Redacting these
 # ballots protects only the CVR.", whichever remedy applies.
 IMAGE_WARNING_LABELS = (
     "The same label is often printed "
@@ -2727,7 +2727,7 @@ def _report_rare_contests(
         return
     print(
         f"  Contests present on fewer than {min_ballots} cards "
-        f"({len(rare)}); grouping ballots cannot protect them:"
+        f"({len(rare)}); aggregating ballots cannot protect them:"
     )
     for name, count in rare.items():
         print(f"    '{name}': {count} card(s)")
@@ -2794,19 +2794,20 @@ def _report_rare_labels(
     if drop_ballottype:
         _print_wrapped(
             f"The label column(s) {are} dropped from the output (--drop-ballottype); "
-            "these ballots are not grouped on account of the label."
+            "these ballots are not redacted on account of the label."
         )
         _print_wrapped(
             "Dropping the column protects only the CVR.  " + IMAGE_WARNING_LABELS
         )
     else:
         _print_wrapped(
-            f"These ballots {are} treated as rare: grouped into the aggregate, "
-            "with their votes starred.  The label column stays; --drop-ballottype "
+            f"These ballots {are} treated as rare: redacted, with their votes "
+            "starred and counted in the aggregation line.  The label column stays; "
+            "--drop-ballottype "
             "drops it instead."
         )
         _print_wrapped(
-            "Grouping these ballots protects only the CVR.  " + IMAGE_WARNING_LABELS
+            "Redacting these ballots protects only the CVR.  " + IMAGE_WARNING_LABELS
         )
     print()
     return found
@@ -3088,7 +3089,7 @@ def parse_args() -> argparse.Namespace:
             "Do not redact contests present on fewer than --min-ballots cards. "
             "By default such a contest keeps its columns, every cell in them is "
             "emptied, and the aggregation line says 'Redacted' in them, because "
-            "grouping ballots cannot protect a contest rarer than the group."
+            "aggregating ballots cannot protect a contest rarer than the aggregate."
         ),
     )
     parser.add_argument(
@@ -3097,9 +3098,9 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Drop the BallotType column, and the --stylecol column if given, from "
             "the output.  A ballot whose label is carried by fewer than "
-            "--min-ballots ballots is otherwise treated as rare and grouped into "
-            "the aggregate; with this option the label goes instead, and the "
-            "ballot is not grouped on account of it.  Either way this protects "
+            "--min-ballots ballots is otherwise treated as rare and redacted; "
+            "with this option the label goes instead, and the ballot is not "
+            "redacted on account of it.  Either way this protects "
             "only the CVR, not ballot images that print the same label."
         ),
     )
@@ -3383,7 +3384,7 @@ class CvrAnonymizerApp:
         tk.Radiobutton(
             frame,
             text=(
-                "Group rare ballots within their precinct portion "
+                "Redact rare ballots within their precinct portion "
                 "(keeps the precinct column; recommended)"
             ),
             variable=self._redact_on_precinct_var,
@@ -3403,7 +3404,7 @@ class CvrAnonymizerApp:
         tk.Radiobutton(
             frame,
             text=(
-                "Group ballots whose ballot type is rare "
+                "Redact ballots whose ballot type is rare "
                 "(keeps the ballot-type column; recommended)"
             ),
             variable=self._drop_ballottype_var,
