@@ -52,10 +52,10 @@ Under **Precinct portions and ballot types**, each ballot's header or barcode re
 portion and ballot type, so ballot images show them even when the CVR doesn't. Keep the default
 choice in each pair:
 
-- **Precinct portions:** "Group rare ballots within their precinct portion". The tool keeps the
-  precinct column and groups the ballots that would stand out within it. Choose "Remove the
+- **Precinct portions:** "Redact rare ballots within their precinct portion". The tool keeps the
+  precinct column and redacts the ballots that would stand out within it. Choose "Remove the
   precinct column" only if you will never release ballot images with precinct information.
-- **Ballot types:** "Group ballots whose ballot type is rare". Choose "Remove the ballot-type
+- **Ballot types:** "Redact ballots whose ballot type is rare". Choose "Remove the ballot-type
   column" only if you will never release ballot images with ballot-type information.
 
 At the bottom, leave **Minimum Ballots** at 10 unless local laws or rules require a higher number,
@@ -73,7 +73,8 @@ Click **(2) Produce Redacted CVR**, then:
    you like. The window shows the three files it will write there, named after your export:
    - `<export>-redacted.csv`: the redacted CVR;
    - `<export>-redacted-ballots.txt`: the ballots whose images need redacting if you ever
-     release ballot images. Keep it with the redacted CVR even if you don't plan to;
+     release ballot images, with the reason for each. Keep it with the redacted CVR even if you
+     don't plan to;
    - `<export>-report.txt`: a record of the run: the version, the options, your export's
      SHA-256, and everything the tool found and did.
 3. Click **Run Redaction**. If any of the three files is already there, the tool asks before
@@ -93,7 +94,7 @@ such as `3-19-7` into dates (3/19/2007), damaging the file.
 
 ## Reading the redacted file
 
-- `*` in place of votes: a ballot that was grouped; its votes are in the `AGGREGATED` line.
+- `*` in place of votes: a redacted ballot; its votes are counted in the `AGGREGATED` line.
   Keep the `AGGREGATED` line: without it the file's totals no longer match reported results.
 - A blank cell: the contest is not on that card.
 - `Redacted` in the `AGGREGATED` line: a contest on so few ballots countywide

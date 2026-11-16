@@ -10,21 +10,21 @@ wrote it.
 
 - **Precinct redaction is the default.** Each ballot's header or barcode records its precinct
   portion, so ballot images show it even when the CVR's precinct column is removed. The tool now
-  keeps that column and groups the ballots whose style is rare within their precinct portion, so
+  keeps that column and redacts the ballots whose style is rare within their precinct portion, so
   they are starred and on the redacted ballot list. `--no-redact-on-precinct` removes the column
   instead, for counties that will never release ballot images with precinct information;
   `--redact-on-precinct` still works.
 - **Contests too rare to protect are redacted.** A contest present on more than 0 and fewer than
-  `--min-ballots` cards in the whole file can't be protected by grouping ballots, because it is
-  rarer than the group. Its columns stay in the file, every cell in them is emptied on every
+  `--min-ballots` cards in the whole file can't be protected by aggregating ballots, because it is
+  rarer than the aggregate. Its columns stay in the file, every cell in them is emptied on every
   ballot row, and its columns in the aggregation line say `Redacted`. If no ballot needed
-  grouping, an aggregation line standing for no ballots is added to carry the `Redacted` marks.
+  redacting, an aggregation line standing for no ballots is added to carry the `Redacted` marks.
   `--keep-rare-contests` turns this off.
 - **Rare ballot-type labels make their ballots rare.** A ballot whose `BallotType` label (or
-  `--stylecol` label) is carried by fewer than `--min-ballots` ballots is grouped into the
-  aggregate like any rare ballot, since the label alone picks it out. `--drop-ballottype` drops
+  `--stylecol` label) is carried by fewer than `--min-ballots` ballots is redacted like any
+  rare ballot, since the label alone picks it out. `--drop-ballottype` drops
   the label columns instead.
-- **The aggregation line leaves a contest's columns empty when no grouped ballot carries it,** as
+- **The aggregation line leaves a contest's columns empty when no redacted ballot carries it,** as
   a ballot row does, instead of writing 0. A 0 says the contest is on the card and not voted, which
   overstated the number of cards carrying the contest and so understated its margin. The
   aggregation line added for rare contests alone is empty in every column it does not mark
@@ -33,15 +33,21 @@ wrote it.
   is on a rare ballot and on fewer than `--min-ballots` of the aggregate's ballots, whose votes for
   those few ballots the aggregation line then shows. The help text and the window now say that
   skipping contest balancing is not recommended.
-- **`--redacted-list` also lists visible ballots that carried a redacted contest.** Their rows show
-  nothing of the contest, but their ballot images do, so images of these ballots need redacting
-  too.
+- **The redacted ballot list is comprehensive, with a reason for each ballot.** It starts with a
+  header row, `ImprintedId,Reason`, and lists every ballot whose image needs redacting: the
+  redacted ballots; visible ballots that carried a redacted contest (their rows show nothing of
+  the contest, but their images do); and, when the precinct or ballot-type column is removed,
+  visible ballots that are rare within their precinct portion or carry a rare label, whose images
+  still show the precinct or the ballot-type code. With the "Remove the precinct column" option, a
+  CVR whose only rare ballots are rare within their precinct now gets its output and list written,
+  instead of "No redaction needed".
 
 ### The user interface
 
-- The options are grouped: "Protections" (contest balancing, rare contests), then "Precinct
-  portions and ballot types", each a pair of choices, grouping rare ballots (recommended, and
-  selected) or removing the column.
+- The options window has two sections: "Protections" (contest balancing, rare contests), then "Precinct
+  portions and ballot types", each a pair of choices, redacting rare ballots (recommended, and
+  selected) or removing the column. A ballot that is starred and counted in the aggregation line
+  is called "redacted" throughout.
 - **The window names the outputs and saves a report.** It asks for a folder (the input's, unless
   changed) instead of two file names, shows the three files it will write
   (`<input>-redacted.csv`, `<input>-redacted-ballots.txt`, `<input>-report.txt`), and writes all
